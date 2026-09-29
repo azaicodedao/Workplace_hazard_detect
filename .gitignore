@@ -1,0 +1,6 @@
+*.pth
+*.pt
+models/best_multitask_videomae.pth
+uploads/
+results/
+__pycache__/
