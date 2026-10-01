@@ -4,4 +4,6 @@ torch
 torchvision
 pydantic
 python-multipart
-# Add other dependencies for your VideoMAE model (e.g., transformers, decord, etc.)
+transformers
+opencv-python
+numpy

@@ -27,8 +27,8 @@ class VideoPredictor:
         # 1. Tiền xử lý (Cắt frame và chuẩn hóa Tensor)
         pixel_values = preprocess_video(video_path, self.image_processor)
         
-        # Thêm chiều Batch (unsqueeze) để tạo thành kích thước [1, 16, 3, 224, 224] và chuyển lên GPU
-        pixel_values = pixel_values.unsqueeze(0).to(self.device)
+        # Chuyển Tensor lên GPU/CPU
+        pixel_values = pixel_values.to(self.device)
         
         # 2. Suy luận (Chạy Forward Pass với no_grad để tiết kiệm RAM)
         with torch.no_grad():
