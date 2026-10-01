@@ -3,6 +3,7 @@ import shutil
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.inference.predictor import VideoPredictor
 from app.schemas.prediction import PredictionResponse
+import traceback
 
 router = APIRouter()
 
@@ -45,7 +46,14 @@ async def predict_video(file: UploadFile = File(...)):
         # Xóa file nếu xảy ra lỗi trong lúc phân tích
         if os.path.exists(file_path):
             os.remove(file_path)
-        raise HTTPException(status_code=500, detail=f"Lỗi trong quá trình phân tích video: {e}")
+        print("========== INFERENCE ERROR ==========")
+        traceback.print_exc()
+        print("=====================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Lỗi trong quá trình phân tích video: {str(e)}"
+        )
         
     # Xóa file video sau khi phân tích xong để tiết kiệm dung lượng bộ nhớ
     if os.path.exists(file_path):
