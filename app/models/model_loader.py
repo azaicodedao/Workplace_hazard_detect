@@ -5,7 +5,7 @@ from app.models.videomae_model import MultiTaskVideoMAE
 
 def load_action_vocab(vocab_path: str):
     """
-    Load file action_vocab.json để lấy từ điển các hành vi.
+    Load file action_vocab.json de lay tu dien cac hanh vi.
     """
     with open(vocab_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -48,28 +48,28 @@ def load_model(
     vocab_path: str = "models/action_vocab.json"
 ):
     """
-    Khởi tạo mô hình, nạp trọng số (.pth) và trả về model ở chế độ eval().
+    Khoi tao mo hinh, nap trong so (.pth) va tra ve model o che do eval().
     """
-    # 1. Đọc từ điển hành vi
+    # 1. Doc tu dien hanh vi
     if not os.path.exists(vocab_path):
-        raise FileNotFoundError(f"Không tìm thấy file từ điển hành vi: {vocab_path}. Vui lòng copy file action_vocab.json vào thư mục models/.")
+        raise FileNotFoundError(f"Khong tim thay file tu dien hanh vi: {vocab_path}. Vui long copy file action_vocab.json vao thu muc models/.")
     
     _, idx2action = load_action_vocab(vocab_path)
     num_actions = len(idx2action)
 
     if num_actions == 0:
-        raise ValueError(f"File {vocab_path} không hợp lệ hoặc không chứa hành vi nào.")
+        raise ValueError(f"File {vocab_path} khong hop le hoac khong chua hanh vi nao.")
 
-    # 2. Khởi tạo kiến trúc mô hình (bản vẽ)
-    print(f"Khởi tạo kiến trúc mô hình với {num_actions} hành vi...")
+    # 2. Khoi tao kien truc mo hinh
+    print(f"Khoi tao kien truc mo hinh voi {num_actions} hanh vi...")
     model = MultiTaskVideoMAE(model_ckpt=model_ckpt, num_actions=num_actions)
 
-    # 3. Load file trọng số (.pth)
+    # 3. Load file trong so (.pth)
     if not os.path.exists(weights_path):
-        raise FileNotFoundError(f"Không tìm thấy file trọng số: {weights_path}. Vui lòng copy file .pth vào đúng đường dẫn.")
+        raise FileNotFoundError(f"Khong tim thay file trong so: {weights_path}. Vui long copy file .pth vao dung duong dan.")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Đang nạp trọng số từ {weights_path} lên {device}...")
+    print(f"Dang nap trong so tu {weights_path} len {device}...")
 
     checkpoint = torch.load(weights_path, map_location=device)
     state_dict = remap_videomae_attention_biases(checkpoint)
@@ -87,9 +87,9 @@ def load_model(
 
     model.load_state_dict(state_dict, strict=True)
     
-    # 4. Đưa model về chế độ dự đoán (Evaluation Mode)
+    # 4. Dua model ve che do du doan (Evaluation Mode)
     model.to(device)
     model.eval()
     
-    print("Mô hình đã sẵn sàng cho inference!")
+    print("Mo hinh da san sang cho inference!")
     return model, idx2action, device

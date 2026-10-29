@@ -1,62 +1,286 @@
+"""
+routes.py -- FastAPI router cho inference endpoints.
+
+Lock strategy:
+    - inference_lock: threading.Lock (khong phai asyncio.Lock)
+      Vi inference (PyTorch forward pass) la synchronous va duoc chay trong
+      worker thread thong qua asyncio.to_thread(). threading.Lock dam bao
+      chi mot inference chay tren model/GPU tai mot thoi diem.
+
+    - POST /predict/ (video upload):
+        Goi asyncio.to_thread(_run_video_inference, ...).
+        Worker thread acquire lock voi blocking=True (co the cho), giu nguyen
+        trai nghiem cua chuc nang cu.
+
+    - POST /predict/live/ (live camera):
+        Goi asyncio.to_thread(_run_live_inference, ...).
+        Worker thread thu acquire lock voi blocking=False. Neu that bai
+        (model dang ban) -> raise RuntimeError("busy") -> route tra 429.
+        Khong xep hang cho.
+
+    Lock duoc giai phong trong finally block trong moi worker function,
+    dam bao duoc giai phong ca khi inference sinh ra exception.
+
+Live camera config:
+    LIVE_NUM_FRAMES        -- so frames yeu cau (16, khop voi VideoMAE)
+    LIVE_SAMPLE_INTERVAL_MS -- khoang thoi gian frontend lay mau 1 frame (ms)
+                              16 frames x 333ms ~ 5.3 giay cua so quan sat.
+                              Day la gia tri thu nghiem, chua xac nhan la
+                              tuong thich hoan toan voi phan bo thoi gian
+                              cua du lieu huan luyen.
+"""
+
 import os
+import io
 import shutil
-from fastapi import APIRouter, UploadFile, File, HTTPException
+import threading
+import traceback
+from typing import List
+
+import cv2
+import numpy as np
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
+
 from app.inference.predictor import VideoPredictor
 from app.schemas.prediction import PredictionResponse
-import traceback
 
 router = APIRouter()
 
-# Khởi tạo mô hình AI toàn cục (Chạy 1 lần duy nhất lúc bật server)
+# ---------------------------------------------------------------------------
+# Khoi tao model duy nhat -- khong tao them bat ky predictor nao khac
+# ---------------------------------------------------------------------------
 try:
     predictor = VideoPredictor()
-except Exception as e:
-    print(f"Lỗi khởi tạo mô hình AI: {e}")
+except Exception as _e:
+    print(f"Loi khoi tao mo hinh AI: {_e}")
     predictor = None
 
-# Thư mục lưu trữ video tạm thời
+# ---------------------------------------------------------------------------
+# Inference lock -- threading.Lock vi inference chay trong worker thread
+# ---------------------------------------------------------------------------
+inference_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Thu muc luu video tam
+# ---------------------------------------------------------------------------
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Live camera config (de thay doi de dang)
+# ---------------------------------------------------------------------------
+# So frames yeu cau -- phai khop voi VideoMAE (T=16), KHONG thay doi
+LIVE_NUM_FRAMES: int = 16
+
+# Khoang thoi gian lay mau o frontend (ms) -- chi de document, server khong enforce
+# 16 frames x 333ms = ~5.3 giay cua so quan sat
+# LUU Y: Gia tri nay chua duoc xac nhan la phu hop voi phan bo thoi gian
+# cua du lieu huan luyen. Dieu chinh neu ket qua inference bat thuong.
+LIVE_SAMPLE_INTERVAL_MS: int = 333
+
+
+# ---------------------------------------------------------------------------
+# Worker functions -- chay trong thread pool, KHONG block event loop
+# ---------------------------------------------------------------------------
+
+def _run_video_inference(file_path: str) -> dict:
+    """
+    Chay inference cho video upload trong worker thread.
+    Acquire lock voi blocking=True -- co the cho neu model dang ban.
+    Giai phong lock trong finally block.
+    """
+    acquired = inference_lock.acquire(blocking=True)
+    try:
+        return predictor.predict(file_path)
+    finally:
+        if acquired:
+            inference_lock.release()
+
+
+def _run_live_inference(frames: List[np.ndarray]) -> dict:
+    """
+    Chay inference cho live camera trong worker thread.
+    Thu acquire lock voi blocking=False. Neu that bai, raise RuntimeError("busy")
+    de route handler tra 429.
+    Giai phong lock trong finally block.
+    """
+    acquired = inference_lock.acquire(blocking=False)
+    if not acquired:
+        raise RuntimeError("busy")
+    try:
+        return predictor.predict_from_frames(frames)
+    finally:
+        inference_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Helper: decode anh tu bytes -> RGB numpy array
+# ---------------------------------------------------------------------------
+
+def _decode_image_to_rgb(data: bytes, index: int) -> np.ndarray:
+    """
+    Giai ma bytes cua mot anh thanh numpy array RGB (H, W, 3) uint8.
+    Raise ValueError neu du lieu khong hop le hoac khong giai ma duoc.
+    """
+    arr = np.frombuffer(data, dtype=np.uint8)
+    img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img_bgr is None:
+        raise ValueError(
+            f"Khong the giai ma anh thu {index + 1}. "
+            "Dam bao la file anh hop le (JPEG, PNG, BMP, ...)."
+        )
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    return img_rgb
+
+
+# ---------------------------------------------------------------------------
+# POST /predict/   -- VIDEO UPLOAD (giu nguyen hoan toan)
+# ---------------------------------------------------------------------------
+
 @router.post("/predict/", response_model=PredictionResponse)
 async def predict_video(file: UploadFile = File(...)):
+    """
+    Phan tich video upload. Endpoint nay KHONG thay doi so voi phien ban goc
+    ngoai viec inference duoc chay qua asyncio.to_thread de tranh block event loop.
+    """
+    import asyncio
+
     if predictor is None:
-        raise HTTPException(status_code=500, detail="Mô hình AI chưa được nạp thành công.")
-        
-    # Kểm tra định dạng file
+        raise HTTPException(status_code=500, detail="Mo hinh AI chua duoc nap thanh cong.")
+
+    # Kiem tra dinh dang file
     allowed_extensions = [".mp4", ".avi", ".mov"]
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed_extensions:
-        raise HTTPException(status_code=400, detail=f"Chỉ hỗ trợ các định dạng video: {allowed_extensions}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chi ho tro cac dinh dang video: {allowed_extensions}",
+        )
 
-    # Tạo đường dẫn lưu file tạm
+    # Luu file tam vao dia
     file_path = os.path.join(UPLOAD_DIR, file.filename)
-    
-    # Lưu file từ request vào đĩa cứng
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Không thể lưu video: {e}")
-        
-    # Gọi bộ não AI để dự đoán
+        raise HTTPException(status_code=500, detail=f"Khong the luu video: {e}")
+
+    # Chay inference trong worker thread (tranh block event loop)
     try:
-        result = predictor.predict(file_path)
+        result = await asyncio.to_thread(_run_video_inference, file_path)
     except Exception as e:
-        # Xóa file nếu xảy ra lỗi trong lúc phân tích
         if os.path.exists(file_path):
-            os.remove(file_path)
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
         print("========== INFERENCE ERROR ==========")
         traceback.print_exc()
         print("=====================================")
-
         raise HTTPException(
             status_code=500,
-            detail=f"Lỗi trong quá trình phân tích video: {str(e)}"
+            detail=f"Loi trong qua trinh phan tich video: {str(e)}",
         )
-        
-    # Xóa file video sau khi phân tích xong để tiết kiệm dung lượng bộ nhớ
+
+    # Xoa file video sau khi phan tich xong de tiet kiem bo nho
     if os.path.exists(file_path):
-        os.remove(file_path)
-        
+        try:
+            os.remove(file_path)
+        except Exception as remove_err:
+            print(f"Canh bao: Chua the xoa file tam {file_path}: {remove_err}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# POST /predict/live/   -- LIVE CAMERA (endpoint moi)
+# ---------------------------------------------------------------------------
+
+@router.post("/predict/live/", response_model=PredictionResponse)
+async def predict_live(frames: List[UploadFile] = File(...)):
+    """
+    Phan tich 16 frame tu live camera.
+
+    Request format:
+        multipart/form-data
+        field name: frames (multi-value)
+        content:    16 file anh (JPEG/PNG/BMP), theo thu tu thoi gian
+
+    Response: PredictionResponse (cung schema voi /predict/)
+
+    HTTP 422: thieu hoac sai so luong frames, anh khong giai ma duoc
+    HTTP 429: model dang chay inference cho request khac
+    HTTP 500: loi he thong
+    """
+    import asyncio
+
+    if predictor is None:
+        raise HTTPException(status_code=500, detail="Mo hinh AI chua duoc nap thanh cong.")
+
+    # --- Kiem tra so luong frames ---
+    if len(frames) != LIVE_NUM_FRAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Yeu cau dung {LIVE_NUM_FRAMES} frames, nhan duoc {len(frames)}. "
+                f"(Cau hinh: {LIVE_NUM_FRAMES} frames x {LIVE_SAMPLE_INTERVAL_MS}ms "
+                f"~ {LIVE_NUM_FRAMES * LIVE_SAMPLE_INTERVAL_MS / 1000:.1f}s cua so quan sat)"
+            ),
+        )
+
+    # --- Doc va giai ma tung frame ---
+    decoded_frames: List[np.ndarray] = []
+    for i, upload in enumerate(frames):
+        try:
+            data = await upload.read()
+        except Exception as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Khong the doc frame thu {i + 1}: {e}",
+            )
+        finally:
+            await upload.close()
+
+        if len(data) == 0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Frame thu {i + 1} rong (0 bytes).",
+            )
+
+        try:
+            img_rgb = _decode_image_to_rgb(data, i)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        decoded_frames.append(img_rgb)
+
+    # --- Chay inference trong worker thread ---
+    try:
+        result = await asyncio.to_thread(_run_live_inference, decoded_frames)
+    except RuntimeError as e:
+        if str(e) == "busy":
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Mo hinh dang xu ly mot yeu cau khac. "
+                    "Vui long thu lai sau mot giay."
+                ),
+            )
+        print("========== LIVE INFERENCE ERROR ==========")
+        traceback.print_exc()
+        print("==========================================")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Loi trong qua trinh phan tich live frame: {str(e)}",
+        )
+    except Exception as e:
+        print("========== LIVE INFERENCE ERROR ==========")
+        traceback.print_exc()
+        print("==========================================")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Loi trong qua trinh phan tich live frame: {str(e)}",
+        )
+
     return result
