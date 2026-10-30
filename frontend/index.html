@@ -16,80 +16,191 @@
                     <h1>Industrial Safety System</h1>
                 </div>
             </div>
-            <p class="topbar-note">Offline clip analysis · VideoMAE hazard detection</p>
+            <p class="topbar-note">Workplace hazard detection · VideoMAE Multi-task</p>
         </header>
 
-        <main class="layout">
-            <section class="panel upload-panel" aria-labelledby="upload-heading">
-                <div class="panel-header">
-                    <h2 id="upload-heading">Video input</h2>
-                    <p>Upload a workplace clip for hazard analysis. Supported formats: MP4, AVI, MOV.</p>
-                </div>
+        <!-- Tab Switcher -->
+        <nav class="tab-nav" role="tablist" aria-label="Detection modes">
+            <button
+                type="button"
+                id="tab-btn-video"
+                class="tab-btn active"
+                role="tab"
+                aria-selected="true"
+                aria-controls="tab-content-video"
+            >
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
+                    <line x1="7" y1="2" x2="7" y2="22"></line>
+                    <line x1="17" y1="2" x2="17" y2="22"></line>
+                    <line x1="2" y1="12" x2="22" y2="12"></line>
+                    <line x1="2" y1="7" x2="7" y2="7"></line>
+                    <line x1="2" y1="17" x2="7" y2="17"></line>
+                    <line x1="17" y1="17" x2="22" y2="17"></line>
+                    <line x1="17" y1="7" x2="22" y2="7"></line>
+                </svg>
+                <span>Video Analysis</span>
+            </button>
+            <button
+                type="button"
+                id="tab-btn-live"
+                class="tab-btn"
+                role="tab"
+                aria-selected="false"
+                aria-controls="tab-content-live"
+            >
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M23 7l-7 5 7 5V7z"></path>
+                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                </svg>
+                <span>Live Camera</span>
+                <span class="live-dot" aria-hidden="true"></span>
+            </button>
+        </nav>
 
-                <div
-                    id="dropzone"
-                    class="dropzone"
-                    tabindex="0"
-                    role="button"
-                    aria-label="Select or drop a video file"
-                >
-                    <input
-                        id="file-input"
-                        type="file"
-                        accept=".mp4,.avi,.mov,video/mp4,video/x-msvideo,video/quicktime"
-                        hidden
+        <!-- TAB 1: VIDEO ANALYSIS (Bao toan 100% cac element cu) -->
+        <div id="tab-content-video" class="tab-content active" role="tabpanel" aria-labelledby="tab-btn-video">
+            <main class="layout">
+                <section class="panel upload-panel" aria-labelledby="upload-heading">
+                    <div class="panel-header">
+                        <h2 id="upload-heading">Video input</h2>
+                        <p>Upload a workplace clip for hazard analysis. Supported formats: MP4, AVI, MOV.</p>
+                    </div>
+
+                    <div
+                        id="dropzone"
+                        class="dropzone"
+                        tabindex="0"
+                        role="button"
+                        aria-label="Select or drop a video file"
                     >
-                    <div class="dropzone-icon" aria-hidden="true">
-                        <svg viewBox="0 0 48 48" fill="none">
-                            <rect x="8" y="12" width="32" height="24" rx="4" stroke="currentColor" stroke-width="2"/>
-                            <path d="M16 28l6-6 4 4 6-8 8 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                            <circle cx="18" cy="20" r="2" fill="currentColor"/>
-                        </svg>
+                        <input
+                            id="file-input"
+                            type="file"
+                            accept=".mp4,.avi,.mov,video/mp4,video/x-msvideo,video/quicktime"
+                            hidden
+                        >
+                        <div class="dropzone-icon" aria-hidden="true">
+                            <svg viewBox="0 0 48 48" fill="none">
+                                <rect x="8" y="12" width="32" height="24" rx="4" stroke="currentColor" stroke-width="2"/>
+                                <path d="M16 28l6-6 4 4 6-8 8 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <circle cx="18" cy="20" r="2" fill="currentColor"/>
+                            </svg>
+                        </div>
+                        <p class="dropzone-title">Drop a video here</p>
+                        <p class="dropzone-sub">or click to browse files</p>
+                        <button type="button" id="browse-btn" class="btn btn-ghost">Select video</button>
                     </div>
-                    <p class="dropzone-title">Drop a video here</p>
-                    <p class="dropzone-sub">or click to browse files</p>
-                    <button type="button" id="browse-btn" class="btn btn-ghost">Select video</button>
-                </div>
 
-                <div id="file-meta" class="file-meta" hidden>
-                    <div class="file-meta-row">
-                        <span class="file-label">Selected file</span>
-                        <strong id="file-name"></strong>
+                    <div id="file-meta" class="file-meta" hidden>
+                        <div class="file-meta-row">
+                            <span class="file-label">Selected file</span>
+                            <strong id="file-name"></strong>
+                        </div>
+                        <p id="file-size" class="file-size"></p>
                     </div>
-                    <p id="file-size" class="file-size"></p>
-                </div>
 
-                <div id="preview-wrap" class="preview-wrap" hidden>
-                    <video id="video-preview" class="video-preview" controls playsinline></video>
-                    <p id="preview-fallback" class="preview-fallback" hidden>
-                        Preview is not available for this format in the browser. The file can still be analyzed.
-                    </p>
-                </div>
-
-                <div class="actions">
-                    <button type="button" id="analyze-btn" class="btn btn-primary" disabled>
-                        <span id="analyze-label">Analyze video</span>
-                    </button>
-                    <button type="button" id="clear-btn" class="btn btn-ghost" hidden>Clear</button>
-                </div>
-                <p id="form-hint" class="form-hint" role="status"></p>
-            </section>
-
-            <section class="panel result-panel" aria-labelledby="result-heading" aria-live="polite">
-                <div class="panel-header">
-                    <h2 id="result-heading">Detection result</h2>
-                    <p>Results appear after analysis. Nothing is shown until a clip is processed.</p>
-                </div>
-
-                <div id="result-body">
-                    <div class="empty-state" id="empty-state">
-                        <div class="empty-icon" aria-hidden="true"></div>
-                        <h3>No analysis yet</h3>
-                        <p>Select a video and run analysis to see hazard status, confidence, and detected workplace actions.</p>
+                    <div id="preview-wrap" class="preview-wrap" hidden>
+                        <video id="video-preview" class="video-preview" controls playsinline></video>
+                        <p id="preview-fallback" class="preview-fallback" hidden>
+                            Preview is not available for this format in the browser. The file can still be analyzed.
+                        </p>
                     </div>
-                </div>
-            </section>
-        </main>
+
+                    <div class="actions">
+                        <button type="button" id="analyze-btn" class="btn btn-primary" disabled>
+                            <span id="analyze-label">Analyze video</span>
+                        </button>
+                        <button type="button" id="clear-btn" class="btn btn-ghost" hidden>Clear</button>
+                    </div>
+                    <p id="form-hint" class="form-hint" role="status"></p>
+                </section>
+
+                <section class="panel result-panel" aria-labelledby="result-heading" aria-live="polite">
+                    <div class="panel-header">
+                        <h2 id="result-heading">Detection result</h2>
+                        <p>Results appear after analysis. Nothing is shown until a clip is processed.</p>
+                    </div>
+
+                    <div id="result-body">
+                        <div class="empty-state" id="empty-state">
+                            <div class="empty-icon" aria-hidden="true"></div>
+                            <h3>No analysis yet</h3>
+                            <p>Select a video and run analysis to see hazard status, confidence, and detected workplace actions.</p>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+
+        <!-- TAB 2: LIVE CAMERA (Khu vuc camera truc tiep va ket qua doc lap) -->
+        <div id="tab-content-live" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-live" hidden>
+            <main class="layout">
+                <section class="panel live-camera-panel" aria-labelledby="live-heading">
+                    <div class="panel-header">
+                        <div class="panel-header-with-badge">
+                            <h2 id="live-heading">Live Camera Feed</h2>
+                            <span id="live-status-badge" class="status-badge badge-idle">Camera Off</span>
+                        </div>
+                        <p>Real-time workplace surveillance. The system collects a 16-frame sliding window (3 FPS) for hazard monitoring.</p>
+                    </div>
+
+                    <div class="live-feed-container">
+                        <video id="live-video" class="live-video-element" autoplay playsinline muted></video>
+                        <div id="live-placeholder" class="live-placeholder">
+                            <div class="live-placeholder-icon" aria-hidden="true">
+                                <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M38 14l-10 7v6l10 7V14z"/>
+                                    <rect x="4" y="10" width="24" height="28" rx="4"/>
+                                </svg>
+                            </div>
+                            <p class="live-placeholder-title">Camera is currently inactive</p>
+                            <p class="live-placeholder-sub">Click "Start Camera" to begin real-time safety monitoring.</p>
+                        </div>
+                        <!-- Canvas an de chup frames thanh JPEG -->
+                        <canvas id="live-canvas" hidden></canvas>
+                    </div>
+
+                    <div class="live-stream-bar">
+                        <div class="stream-stat">
+                            <span class="stat-label">Buffer Window</span>
+                            <strong id="live-buffer-counter">0 / 16 frames</strong>
+                        </div>
+                        <div class="stream-stat">
+                            <span class="stat-label">Inference Status</span>
+                            <span id="live-stream-state">Idle</span>
+                        </div>
+                    </div>
+
+                    <div class="actions">
+                        <button type="button" id="live-start-btn" class="btn btn-primary">
+                            <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            <span>Start Camera</span>
+                        </button>
+                        <button type="button" id="live-stop-btn" class="btn btn-ghost" disabled>
+                            <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
+                            <span>Stop Camera</span>
+                        </button>
+                    </div>
+                    <p id="live-hint" class="form-hint" role="status"></p>
+                </section>
+
+                <section class="panel result-panel" aria-labelledby="live-result-heading" aria-live="polite">
+                    <div class="panel-header">
+                        <h2 id="live-result-heading">Live Detection Result</h2>
+                        <p>Continuously updated per sliding window. Independent from uploaded video results.</p>
+                    </div>
+
+                    <div id="live-result-body">
+                        <div class="empty-state" id="live-empty-state">
+                            <div class="empty-icon" aria-hidden="true"></div>
+                            <h3>Waiting for live stream</h3>
+                            <p>Start the camera to monitor workplace hazards and view real-time classification results.</p>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
     </div>
 
     <script src="js/app.js"></script>
