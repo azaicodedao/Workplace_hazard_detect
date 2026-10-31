@@ -467,48 +467,152 @@ h1 {
    Tab Navigation & Multi-mode Layout
    ========================================================================== */
 
-.tab-nav {
-    display: inline-flex;
-    gap: 8px;
-    background: var(--bg-elevated);
-    padding: 6px;
-    border-radius: 12px;
-    border: 1px solid var(--border);
+.source-switcher {
     margin-bottom: 24px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: 18px;
+    border: 1px solid rgba(73, 101, 132, 0.52);
+    border-radius: 16px;
+    background: linear-gradient(145deg, rgba(18, 29, 41, 0.96), rgba(13, 22, 31, 0.96));
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.2);
+}
+
+.source-switcher-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.source-switcher-heading h2 {
+    margin: 2px 0 0;
+    font-size: 17px;
+}
+
+.source-switcher-kicker {
+    margin: 0;
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+}
+
+.source-switcher-note {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.tab-nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    width: 100%;
 }
 
 .tab-btn {
-    display: inline-flex;
+    position: relative;
+    display: grid;
+    grid-template-columns: 46px minmax(0, 1fr) 22px;
+    gap: 12px;
     align-items: center;
-    gap: 8px;
-    padding: 10px 18px;
-    border-radius: 8px;
-    border: none;
-    background: transparent;
+    min-width: 0;
+    min-height: 82px;
+    padding: 13px 14px;
+    border: 1px solid #314359;
+    border-radius: 13px;
+    background: linear-gradient(145deg, #172330, #121c27);
     color: var(--text-muted);
     font: inherit;
-    font-size: 14px;
-    font-weight: 600;
+    text-align: left;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
     user-select: none;
 }
 
 .tab-btn:hover {
+    border-color: #4a6684;
+    background: linear-gradient(145deg, #1b2a39, #152331);
     color: var(--text);
-    background: var(--bg-muted);
+    transform: translateY(-1px);
+}
+
+.tab-btn:focus-visible {
+    outline: 3px solid rgba(61, 156, 240, 0.32);
+    outline-offset: 2px;
 }
 
 .tab-btn.active {
-    background: var(--accent-strong);
+    border-color: rgba(61, 156, 240, 0.9);
+    background: linear-gradient(145deg, rgba(31, 122, 212, 0.28), rgba(20, 48, 73, 0.72));
     color: #ffffff;
-    box-shadow: 0 2px 8px rgba(31, 122, 212, 0.35);
+    box-shadow: 0 8px 22px rgba(31, 122, 212, 0.2), inset 0 0 0 1px rgba(102, 184, 255, 0.12);
+}
+
+.source-icon {
+    display: grid;
+    width: 46px;
+    height: 46px;
+    place-items: center;
+    border: 1px solid #3a5069;
+    border-radius: 12px;
+    background: rgba(8, 16, 24, 0.48);
+    color: #8fa5ba;
+}
+
+.tab-btn.active .source-icon {
+    border-color: rgba(89, 177, 255, 0.48);
+    background: rgba(61, 156, 240, 0.16);
+    color: #74beff;
 }
 
 .tab-icon {
-    width: 17px;
-    height: 17px;
+    display: block;
+    width: 24px;
+    height: 24px;
+}
+
+.source-copy {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
+.source-copy strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.source-copy small {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.source-check {
+    display: grid;
+    width: 21px;
+    height: 21px;
+    place-items: center;
+    border: 1px solid #3a4d63;
+    border-radius: 50%;
+    color: transparent;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.tab-btn.active .source-check {
+    border-color: var(--accent);
+    background: var(--accent-strong);
+    color: #ffffff;
 }
 
 .live-dot {
@@ -678,4 +782,216 @@ h1 {
     height: 15px;
     margin-right: 6px;
     vertical-align: -2px;
+}
+
+/* Three-source controls --------------------------------------------------- */
+.source-switcher .source-selector {
+    display: grid;
+    width: 100%;
+    max-width: none;
+}
+
+.source-controls {
+    margin-bottom: 16px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-muted);
+}
+
+.field-label {
+    display: block;
+    margin-bottom: 7px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.inline-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.select-input {
+    min-width: 0;
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: #0e1721;
+    color: var(--text);
+    padding: 10px 12px;
+    font: inherit;
+}
+
+.btn-compact {
+    min-width: 0;
+    padding: 8px 12px;
+    font-size: 13px;
+}
+
+.capture-progress {
+    height: 5px;
+    margin-top: 8px;
+    overflow: hidden;
+    border-radius: 99px;
+    background: #223040;
+}
+
+.capture-progress span {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--accent), var(--safe));
+    transition: width 0.12s linear;
+}
+
+.phone-pairing p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.phone-pairing .certificate-help {
+    margin-top: 9px;
+    color: var(--warning);
+}
+
+.certificate-help a {
+    color: #ffd37a;
+}
+
+.phone-session-details {
+    display: grid;
+    grid-template-columns: 132px minmax(0, 1fr);
+    gap: 14px;
+    align-items: center;
+}
+
+.phone-qr {
+    width: 132px;
+    height: 132px;
+    padding: 6px;
+    border-radius: 9px;
+    background: #fff;
+}
+
+.phone-session-copy {
+    display: grid;
+    justify-items: start;
+    gap: 8px;
+    min-width: 0;
+}
+
+.phone-session-copy a {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    color: var(--accent);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.session-expiry {
+    color: var(--warning);
+    font-size: 12px;
+}
+
+.phone-fallback {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.phone-fallback a {
+    display: inline;
+    white-space: normal;
+}
+
+/* Phone publisher page --------------------------------------------------- */
+.phone-publisher-page {
+    min-height: 100vh;
+}
+
+.phone-publisher-shell {
+    width: min(100%, 560px);
+    margin: 0 auto;
+    padding: max(24px, env(safe-area-inset-top)) 18px max(28px, env(safe-area-inset-bottom));
+}
+
+.phone-help {
+    margin: 8px 0 20px;
+    color: var(--text-muted);
+}
+
+.phone-preview-card {
+    position: relative;
+    display: grid;
+    min-height: 56vh;
+    overflow: hidden;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: #000;
+    box-shadow: var(--shadow);
+}
+
+.phone-preview-card video {
+    display: none;
+    width: 100%;
+    height: 56vh;
+    object-fit: cover;
+}
+
+.phone-preview-card .status-badge {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+}
+
+.phone-camera-placeholder {
+    color: var(--text-muted);
+}
+
+.phone-publisher-shell > .field-label {
+    margin-top: 18px;
+}
+
+.phone-actions .btn {
+    flex: 1;
+}
+
+@media (max-width: 680px) {
+    .source-switcher {
+        padding: 14px;
+    }
+
+    .source-switcher-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .source-switcher .source-selector {
+        display: grid;
+        width: 100%;
+        grid-template-columns: 1fr;
+    }
+
+    .tab-btn {
+        min-height: 72px;
+    }
+
+    .phone-session-details {
+        grid-template-columns: 1fr;
+        justify-items: center;
+    }
+
+    .phone-session-copy {
+        width: 100%;
+        justify-items: center;
+        text-align: center;
+    }
 }
