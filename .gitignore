@@ -4,3 +4,5 @@ models/best_multitask_videomae.pth
 uploads/
 results/
 __pycache__/
+certs/
+frontend/certs/

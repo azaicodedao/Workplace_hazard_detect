@@ -1,90 +1,92 @@
 (function () {
     "use strict";
 
-    // ======================================================================
-    // API Endpoints & Cấu hình
-    // ======================================================================
     const PREDICT_URL = "/predict/";
     const LIVE_PREDICT_URL = "/predict/live/";
+    const CAMERA_SESSIONS_URL = "/api/camera-sessions";
     const ALLOWED_EXTENSIONS = [".mp4", ".avi", ".mov"];
+    const LIVE_FRAME_COUNT = 16;
+    const LIVE_WINDOW_MS = 5000;
+    const CAMERA_WARMUP_MS = 2500;
+    const REQUIRED_CONSECUTIVE_HAZARDS = 2;
 
-    // Cấu hình Live Camera (khớp với routes.py)
-    const LIVE_NUM_FRAMES = 16;
-    const LIVE_SAMPLE_INTERVAL_MS = 333;   // ~3 FPS: 16 frames đại diện ~5.3 giây cửa sổ quan sát
-    const WARMUP_DURATION_MS = 2500;       // 2.5s warm-up để camera ổn định auto-exposure/focus
-    const REQUIRED_CONSECUTIVE_HAZARDS = 2; // Cần ít nhất 2 cửa sổ liên tiếp dự đoán Hazard để báo động
+    const byId = (id) => document.getElementById(id);
+    const sourceButtons = {
+        upload: byId("tab-btn-video"),
+        computer_camera: byId("tab-btn-computer"),
+        phone_camera: byId("tab-btn-phone")
+    };
 
-    // ======================================================================
-    // DOM Elements: Tabs
-    // ======================================================================
-    const tabBtnVideo = document.getElementById("tab-btn-video");
-    const tabBtnLive = document.getElementById("tab-btn-live");
-    const tabContentVideo = document.getElementById("tab-content-video");
-    const tabContentLive = document.getElementById("tab-content-live");
+    const uploadView = byId("tab-content-video");
+    const liveView = byId("tab-content-live");
+    const dropzone = byId("dropzone");
+    const fileInput = byId("file-input");
+    const browseBtn = byId("browse-btn");
+    const analyzeBtn = byId("analyze-btn");
+    const clearBtn = byId("clear-btn");
+    const analyzeLabel = byId("analyze-label");
+    const fileMeta = byId("file-meta");
+    const fileNameEl = byId("file-name");
+    const fileSizeEl = byId("file-size");
+    const previewWrap = byId("preview-wrap");
+    const videoPreview = byId("video-preview");
+    const previewFallback = byId("preview-fallback");
+    const formHint = byId("form-hint");
+    const resultBody = byId("result-body");
 
-    // ======================================================================
-    // DOM Elements: Tab 1 (Video Analysis) - Bảo toàn 100% ID cũ
-    // ======================================================================
-    const dropzone = document.getElementById("dropzone");
-    const fileInput = document.getElementById("file-input");
-    const browseBtn = document.getElementById("browse-btn");
-    const analyzeBtn = document.getElementById("analyze-btn");
-    const clearBtn = document.getElementById("clear-btn");
-    const analyzeLabel = document.getElementById("analyze-label");
-    const fileMeta = document.getElementById("file-meta");
-    const fileNameEl = document.getElementById("file-name");
-    const fileSizeEl = document.getElementById("file-size");
-    const previewWrap = document.getElementById("preview-wrap");
-    const videoPreview = document.getElementById("video-preview");
-    const previewFallback = document.getElementById("preview-fallback");
-    const formHint = document.getElementById("form-hint");
-    const resultBody = document.getElementById("result-body");
+    const liveVideo = byId("live-video");
+    const liveCanvas = byId("live-canvas");
+    const livePlaceholder = byId("live-placeholder");
+    const livePlaceholderTitle = byId("live-placeholder-title");
+    const livePlaceholderSub = byId("live-placeholder-sub");
+    const liveHeading = byId("live-heading");
+    const liveDescription = byId("live-description");
+    const liveStartBtn = byId("live-start-btn");
+    const liveStartLabel = byId("live-start-label");
+    const liveStopBtn = byId("live-stop-btn");
+    const liveStatusBadge = byId("live-status-badge");
+    const liveBufferCounter = byId("live-buffer-counter");
+    const liveStreamState = byId("live-stream-state");
+    const liveHint = byId("live-hint");
+    const liveResultBody = byId("live-result-body");
+    const progressBar = byId("capture-progress-bar");
+    const computerControls = byId("computer-controls");
+    const phoneControls = byId("phone-controls");
+    const cameraDeviceSelect = byId("camera-device-select");
+    const refreshCamerasBtn = byId("refresh-cameras-btn");
+    const phoneSessionEmpty = byId("phone-session-empty");
+    const phoneSessionDetails = byId("phone-session-details");
+    const phoneQr = byId("phone-qr");
+    const phoneJoinLink = byId("phone-join-link");
+    const phoneAddressMode = byId("phone-address-mode");
+    const phoneFallbackWrap = byId("phone-fallback-wrap");
+    const phoneFallbackLink = byId("phone-fallback-link");
+    const copyPhoneLinkBtn = byId("copy-phone-link-btn");
+    const phoneSessionExpiry = byId("phone-session-expiry");
 
-    // ======================================================================
-    // DOM Elements: Tab 2 (Live Camera)
-    // ======================================================================
-    const liveVideo = document.getElementById("live-video");
-    const liveCanvas = document.getElementById("live-canvas");
-    const livePlaceholder = document.getElementById("live-placeholder");
-    const liveStartBtn = document.getElementById("live-start-btn");
-    const liveStopBtn = document.getElementById("live-stop-btn");
-    const liveStatusBadge = document.getElementById("live-status-badge");
-    const liveBufferCounter = document.getElementById("live-buffer-counter");
-    const liveStreamState = document.getElementById("live-stream-state");
-    const liveHint = document.getElementById("live-hint");
-    const liveResultBody = document.getElementById("live-result-body");
-
-    // ======================================================================
-    // Shared State: Video Analysis
-    // ======================================================================
     let selectedFile = null;
     let objectUrl = null;
     let isProcessing = false;
 
-    // ======================================================================
-    // Shared State: Live Camera & Session Tracking
-    // ======================================================================
-    let cameraStream = null;
-    let cameraActive = false;
-    let currentSessionId = 0;          // Tăng mỗi lần Start Camera hoặc Stop để vô hiệu hóa request cũ
-    let liveSampleTimer = null;
-    let warmupTimer = null;            // Timer chờ camera warm-up ổn định
-    let isWarmingUp = false;           // Cờ trạng thái đang trong giai đoạn warm-up
-    let frameBuffer = [];              // Chứa các Blob JPEG
-    let isLiveAnalyzing = false;       // Khóa gửi request để không gửi đè request mới
-    let consecutiveHazardCount = 0;    // Bộ đếm số cửa sổ Hazard liên tiếp cho Temporal Smoothing
-    let lastSmoothedStatus = "Safe";   // Trạng thái đã làm mượt gần nhất ("Safe" | "Hazard")
+    const live = {
+        source: "upload",
+        revision: 0,
+        stream: null,
+        active: false,
+        waiters: new Set(),
+        analyzing: false,
+        pendingWindow: null,
+        windowNumber: 0,
+        consecutiveHazards: 0,
+        phoneSession: null,
+        signalingSocket: null,
+        peerConnection: null,
+        pendingIce: []
+    };
 
-    // ======================================================================
-    // Helper Functions dùng chung
-    // ======================================================================
     function getExtension(filename) {
-        const idx = filename.lastIndexOf(".");
-        return idx === -1 ? "" : filename.slice(idx).toLowerCase();
-    }
-
-    function isAllowedVideo(file) {
-        return ALLOWED_EXTENSIONS.includes(getExtension(file.name));
+        const index = filename.lastIndexOf(".");
+        return index === -1 ? "" : filename.slice(index).toLowerCase();
     }
 
     function formatBytes(bytes) {
@@ -94,687 +96,576 @@
     }
 
     function formatPercent(value) {
-        const n = Number(value);
-        if (!Number.isFinite(n)) return "—";
-        return (n * 100).toFixed(1) + "%";
+        const number = Number(value);
+        return Number.isFinite(number) ? (number * 100).toFixed(1) + "%" : "-";
     }
 
-    function escapeHtml(text) {
-        return String(text)
+    function escapeHtml(value) {
+        return String(value)
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;");
     }
 
-    function sortActions(actions) {
-        return actions.slice().sort(function (a, b) {
-            return Number(b.confidence) - Number(a.confidence);
-        });
-    }
-
     async function extractErrorMessage(response) {
         try {
             const payload = await response.json();
-            if (payload && payload.detail) {
-                if (typeof payload.detail === "string") return payload.detail;
-                return JSON.stringify(payload.detail);
-            }
-        } catch (err) {
-            // Không phải JSON
+            if (typeof payload.detail === "string") return payload.detail;
+            if (payload.detail) return JSON.stringify(payload.detail);
+        } catch (_) {
+            // Fall back to the HTTP status text.
         }
         return response.statusText || "Unexpected server error.";
     }
 
-    // ======================================================================
-    // TAB 1: LOGIC VIDEO ANALYSIS (Bảo toàn 100% logic cũ)
-    // ======================================================================
-    function revokePreview() {
-        if (objectUrl) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrl = null;
-        }
-        videoPreview.removeAttribute("src");
-        videoPreview.load();
-    }
-
-    function setHint(message) {
-        formHint.textContent = message || "";
-    }
-
-    function setProcessing(processing) {
-        isProcessing = processing;
-        analyzeBtn.disabled = processing || !selectedFile;
-        browseBtn.disabled = processing;
-        clearBtn.disabled = processing;
-        dropzone.setAttribute("aria-disabled", processing ? "true" : "false");
-        analyzeLabel.textContent = processing ? "Analyzing…" : "Analyze video";
-    }
-
-    function renderEmpty() {
-        resultBody.innerHTML = [
-            '<div class="empty-state" id="empty-state">',
-            '  <div class="empty-icon" aria-hidden="true"></div>',
-            "  <h3>No analysis yet</h3>",
-            "  <p>Select a video and run analysis to see hazard status, confidence, and detected workplace actions.</p>",
-            "</div>"
-        ].join("");
-    }
-
-    function renderLoading() {
-        resultBody.innerHTML = [
-            '<div class="loading-state">',
-            '  <div class="spinner" aria-hidden="true"></div>',
-            "  <div>",
-            "    <strong>Running hazard detection</strong>",
-            "    <p class=\"no-actions\">The model is analyzing sampled frames. This can take a moment.</p>",
-            "  </div>",
-            "</div>"
-        ].join("");
-    }
-
-    function renderError(title, message) {
-        const safeTitle = escapeHtml(title);
-        const safeMessage = escapeHtml(message);
-        resultBody.innerHTML = [
-            '<div class="error-card" role="alert">',
-            "  <h3>" + safeTitle + "</h3>",
-            "  <p>" + safeMessage + "</p>",
-            "</div>"
-        ].join("");
-    }
-
     function buildResultCardHtml(data, subtitle) {
-        const isHazard = data.status === "Hazard";
-        const bannerClass = isHazard ? "hazard" : "safe";
-        const statusLabel = isHazard ? "HAZARD DETECTED" : "SAFE";
-        const copy = isHazard
-            ? "An unsafe workplace condition was detected. Review the actions below and follow site safety procedure."
-            : "No hazard was detected. Workplace actions detected by the model are listed below.";
-
+        const status = String(data.status || "Unknown");
+        const hazard = status.toLowerCase() === "hazard";
         const actions = Array.isArray(data.detected_actions)
-            ? sortActions(data.detected_actions)
+            ? data.detected_actions.slice().sort((a, b) => Number(b.confidence) - Number(a.confidence))
             : [];
-
-        const actionsHtml = actions.length
-            ? '<ul class="action-list">' +
-              actions.map(function (item) {
-                  const name = escapeHtml(item.action);
-                  const pct = formatPercent(item.confidence);
-                  const width = Math.max(0, Math.min(100, Number(item.confidence) * 100));
-                  return [
-                      '<li class="action-item">',
-                      '  <div class="action-item-head">',
-                      "    <span>" + name + "</span>",
-                      "    <span>" + pct + "</span>",
-                      "  </div>",
-                      '  <div class="meter"><div class="meter-fill ' + bannerClass + '" style="width:' + width + '%"></div></div>',
-                      "</li>"
-                  ].join("");
-              }).join("") +
-              "</ul>"
-            : '<p class="no-actions">No actions crossed the detection threshold.</p>';
-
-        const confPct = formatPercent(data.hazard_confidence);
-        const confWidth = Math.max(0, Math.min(100, Number(data.hazard_confidence) * 100));
+        const actionHtml = actions.length
+            ? '<ul class="action-list">' + actions.map((item) => (
+                '<li class="action-item"><div class="action-item-head"><strong>' +
+                escapeHtml(item.action) + "</strong><span>" + formatPercent(item.confidence) +
+                "</span></div></li>"
+            )).join("") + "</ul>"
+            : '<p class="no-actions">No workplace actions were returned.</p>';
 
         return [
             '<article class="result-card">',
-            '  <div class="result-banner ' + bannerClass + '">',
-            '    <p class="status-kicker">' + escapeHtml(subtitle || "Model status") + "</p>",
-            '    <h3 class="status-title">' + statusLabel + "</h3>",
-            '    <p class="status-copy">' + copy + "</p>",
+            '  <div class="result-banner ' + (hazard ? "hazard" : "safe") + '">',
+            '    <p class="status-kicker">' + escapeHtml(subtitle || "Analysis result") + "</p>",
+            '    <h3 class="status-title">' + escapeHtml(status.toUpperCase()) + "</h3>",
+            '    <p class="status-copy">' + (hazard ? "A possible workplace hazard was detected." : "No hazard was confirmed in this window.") + "</p>",
             "  </div>",
             '  <div class="confidence-block">',
-            '    <div class="confidence-row">',
-            "      <span>Hazard confidence</span>",
-            "      <strong>" + confPct + "</strong>",
-            "    </div>",
-            '    <div class="meter"><div class="meter-fill ' + bannerClass + '" style="width:' + confWidth + '%"></div></div>',
+            '    <div class="confidence-row"><span>Hazard confidence</span><strong>' + formatPercent(data.hazard_confidence) + "</strong></div>",
+            '    <div class="meter"><div class="meter-fill ' + (hazard ? "hazard" : "safe") + '" style="width:' +
+                Math.max(0, Math.min(100, Number(data.hazard_confidence || 0) * 100)) + '%"></div></div>',
             "  </div>",
-            '  <div class="actions-block">',
-            "    <h3>Detected actions</h3>",
-            actionsHtml,
-            "  </div>",
+            '  <div class="actions-block"><h3>Detected actions</h3>' + actionHtml + "</div>",
             "</article>"
         ].join("");
     }
 
-    function renderResult(data) {
-        resultBody.innerHTML = buildResultCardHtml(data, "Video analysis result");
+    function renderError(container, title, message) {
+        container.innerHTML = '<div class="error-card" role="alert"><h3>' +
+            escapeHtml(title) + "</h3><p>" + escapeHtml(message) + "</p></div>";
     }
 
-    function resetSelection() {
+    function renderLoading(container, title) {
+        container.innerHTML = '<div class="loading-state"><div class="spinner" aria-hidden="true"></div><div><strong>' +
+            escapeHtml(title) + '</strong><p class="no-actions">The model is analyzing the captured frames.</p></div></div>';
+    }
+
+    // ------------------------------------------------------------------
+    // Upload mode: the file and /predict/ contract remain unchanged.
+    // ------------------------------------------------------------------
+    function revokePreview() {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = null;
+        videoPreview.removeAttribute("src");
+        videoPreview.load();
+    }
+
+    function resetUpload() {
         selectedFile = null;
         fileInput.value = "";
+        revokePreview();
         fileMeta.hidden = true;
         previewWrap.hidden = true;
         previewFallback.hidden = true;
+        analyzeBtn.disabled = true;
         clearBtn.hidden = true;
-        revokePreview();
-        setHint("");
-        setProcessing(false);
-        renderEmpty();
+        formHint.textContent = "";
     }
 
-    function showPreview(file) {
-        revokePreview();
-        objectUrl = URL.createObjectURL(file);
-        previewWrap.hidden = false;
-        previewFallback.hidden = true;
-        videoPreview.hidden = false;
-        videoPreview.src = objectUrl;
-
-        videoPreview.onerror = function () {
-            videoPreview.hidden = true;
-            previewFallback.hidden = false;
-        };
-        videoPreview.onloadeddata = function () {
-            videoPreview.hidden = false;
-            previewFallback.hidden = true;
-        };
-    }
-
-    function applySelectedFile(file) {
+    function selectUpload(file) {
+        formHint.textContent = "";
         if (!file) return;
-
-        if (!isAllowedVideo(file)) {
-            setHint("Only .mp4, .avi, and .mov files are supported.");
+        if (!ALLOWED_EXTENSIONS.includes(getExtension(file.name))) {
+            resetUpload();
+            formHint.textContent = "Supported formats: MP4, AVI, MOV.";
             return;
         }
-
         selectedFile = file;
         fileNameEl.textContent = file.name;
         fileSizeEl.textContent = formatBytes(file.size);
         fileMeta.hidden = false;
         clearBtn.hidden = false;
-        setHint("");
         analyzeBtn.disabled = false;
-        showPreview(file);
-        renderEmpty();
+        revokePreview();
+        objectUrl = URL.createObjectURL(file);
+        videoPreview.src = objectUrl;
+        previewWrap.hidden = false;
+        videoPreview.onerror = () => { previewFallback.hidden = false; };
+        videoPreview.onloadedmetadata = () => { previewFallback.hidden = true; };
     }
 
-    async function analyzeVideo() {
+    async function analyzeUpload() {
         if (!selectedFile || isProcessing) return;
-
-        setProcessing(true);
-        setHint("");
-        renderLoading();
-
-        const formData = new FormData();
-        formData.append("file", selectedFile);
-
+        isProcessing = true;
+        analyzeBtn.disabled = true;
+        browseBtn.disabled = true;
+        clearBtn.disabled = true;
+        analyzeLabel.textContent = "Analyzing...";
+        renderLoading(resultBody, "Running video analysis");
+        const body = new FormData();
+        body.append("file", selectedFile);
         try {
-            const response = await fetch(PREDICT_URL, {
-                method: "POST",
-                body: formData
-            });
-
-            if (!response.ok) {
-                const message = await extractErrorMessage(response);
-                const title = response.status === 400
-                    ? "Invalid request"
-                    : response.status === 500
-                        ? "Server error"
-                        : "Request failed (" + response.status + ")";
-                renderError(title, message);
-                return;
-            }
-
-            const data = await response.json();
-            if (!data || typeof data.status === "undefined") {
-                renderError("Unexpected response", "The server did not return a valid prediction result.");
-                return;
-            }
-
-            renderResult(data);
-        } catch (err) {
-            renderError(
-                "Network error",
-                "Could not reach the analysis service. Check that the backend is running and try again."
-            );
+            const response = await fetch(PREDICT_URL, { method: "POST", body });
+            if (!response.ok) throw new Error(await extractErrorMessage(response));
+            resultBody.innerHTML = buildResultCardHtml(await response.json(), "Video analysis result");
+        } catch (error) {
+            renderError(resultBody, "Video analysis failed", error.message);
         } finally {
-            setProcessing(false);
+            isProcessing = false;
+            analyzeBtn.disabled = !selectedFile;
+            browseBtn.disabled = false;
+            clearBtn.disabled = false;
+            analyzeLabel.textContent = "Analyze video";
         }
     }
 
-    function onDropzoneActivate(event) {
-        if (isProcessing) return;
-        if (event.target === browseBtn) return;
-        fileInput.click();
-    }
-
-    dropzone.addEventListener("click", onDropzoneActivate);
-    dropzone.addEventListener("keydown", function (event) {
-        if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onDropzoneActivate(event);
-        }
+    browseBtn.addEventListener("click", (event) => { event.stopPropagation(); fileInput.click(); });
+    dropzone.addEventListener("click", () => { if (!isProcessing) fileInput.click(); });
+    dropzone.addEventListener("keydown", (event) => {
+        if ((event.key === "Enter" || event.key === " ") && !isProcessing) fileInput.click();
     });
+    ["dragenter", "dragover"].forEach((type) => dropzone.addEventListener(type, (event) => {
+        event.preventDefault();
+        dropzone.classList.add("is-dragover");
+    }));
+    ["dragleave", "drop"].forEach((type) => dropzone.addEventListener(type, (event) => {
+        event.preventDefault();
+        dropzone.classList.remove("is-dragover");
+    }));
+    dropzone.addEventListener("drop", (event) => selectUpload(event.dataTransfer.files && event.dataTransfer.files[0]));
+    fileInput.addEventListener("change", () => selectUpload(fileInput.files && fileInput.files[0]));
+    analyzeBtn.addEventListener("click", analyzeUpload);
+    clearBtn.addEventListener("click", resetUpload);
 
-    browseBtn.addEventListener("click", function (event) {
-        event.stopPropagation();
-        if (!isProcessing) fileInput.click();
-    });
-
-    ["dragenter", "dragover"].forEach(function (type) {
-        dropzone.addEventListener(type, function (event) {
-            event.preventDefault();
-            dropzone.classList.add("is-dragover");
-        });
-    });
-
-    ["dragleave", "drop"].forEach(function (type) {
-        dropzone.addEventListener(type, function (event) {
-            event.preventDefault();
-            dropzone.classList.remove("is-dragover");
-        });
-    });
-
-    dropzone.addEventListener("drop", function (event) {
-        if (isProcessing) return;
-        const file = event.dataTransfer.files && event.dataTransfer.files[0];
-        applySelectedFile(file);
-    });
-
-    fileInput.addEventListener("change", function () {
-        applySelectedFile(fileInput.files && fileInput.files[0]);
-    });
-
-    analyzeBtn.addEventListener("click", analyzeVideo);
-    clearBtn.addEventListener("click", resetSelection);
-
-    // ======================================================================
-    // TAB 2: LOGIC LIVE CAMERA (Webcam + Warm-up + Temporal Smoothing)
-    // ======================================================================
+    // ------------------------------------------------------------------
+    // Shared five-second live capture.
+    // ------------------------------------------------------------------
     function setLiveBadge(type, label) {
         liveStatusBadge.className = "status-badge badge-" + type;
         liveStatusBadge.textContent = label;
     }
 
-    function setLiveHint(message, isError) {
+    function setLiveHint(message, error) {
         liveHint.textContent = message || "";
-        liveHint.style.color = isError ? "var(--hazard)" : "var(--text-muted)";
+        liveHint.style.color = error ? "var(--hazard)" : "var(--text-muted)";
     }
 
-    function renderLiveEmpty() {
-        liveResultBody.innerHTML = [
-            '<div class="empty-state" id="live-empty-state">',
-            '  <div class="empty-icon" aria-hidden="true"></div>',
-            "  <h3>Waiting for live stream</h3>",
-            "  <p>Start the camera to monitor workplace hazards and view real-time classification results.</p>",
-            "</div>"
-        ].join("");
+    function resetLiveResult() {
+        liveResultBody.innerHTML = '<div class="empty-state"><div class="empty-icon" aria-hidden="true"></div>' +
+            '<h3>Waiting for a five-second window</h3><p>Start a camera source to collect 16 frames and run analysis.</p></div>';
     }
 
-    function renderLiveResult(data, subtitleText) {
-        const subtitle = subtitleText || "Live window";
-        liveResultBody.innerHTML = buildResultCardHtml(data, subtitle);
+    function cancelWaiters() {
+        live.waiters.forEach((waiter) => {
+            clearTimeout(waiter.timer);
+            waiter.resolve(false);
+        });
+        live.waiters.clear();
     }
 
-    function renderLiveError(title, message) {
-        const safeTitle = escapeHtml(title);
-        const safeMessage = escapeHtml(message);
-        liveResultBody.innerHTML = [
-            '<div class="error-card" role="alert">',
-            "  <h3>" + safeTitle + "</h3>",
-            "  <p>" + safeMessage + "</p>",
-            "</div>"
-        ].join("");
-    }
-
-    // Chụp frame từ video hiện tại sang JPEG Blob (giữ nguyên tỷ lệ gốc của video)
-    function captureFrameBlob() {
-        return new Promise(function (resolve) {
-            if (!liveVideo || liveVideo.videoWidth === 0 || liveVideo.videoHeight === 0) {
-                return resolve(null);
-            }
-            const vw = liveVideo.videoWidth || 640;
-            const vh = liveVideo.videoHeight || 480;
-            const targetHeight = 240;
-            const targetWidth = Math.round((vw / vh) * targetHeight);
-            liveCanvas.width = targetWidth;
-            liveCanvas.height = targetHeight;
-            const ctx = liveCanvas.getContext("2d");
-            if (!ctx) return resolve(null);
-
-            ctx.drawImage(liveVideo, 0, 0, targetWidth, targetHeight);
-            liveCanvas.toBlob(
-                function (blob) {
-                    resolve(blob);
-                },
-                "image/jpeg",
-                0.85
-            );
+    function waitUntil(targetTime, revision) {
+        const delay = Math.max(0, targetTime - performance.now());
+        return new Promise((resolve) => {
+            const waiter = { timer: null, resolve };
+            waiter.timer = setTimeout(() => {
+                live.waiters.delete(waiter);
+                resolve(live.active && live.revision === revision);
+            }, delay);
+            live.waiters.add(waiter);
         });
     }
 
-    // Gửi 16 frames lên backend với Temporal Smoothing
-    async function triggerLiveInference(framesToSend, sessionId) {
-        if (isLiveAnalyzing) return;
-        if (sessionId !== currentSessionId || !cameraActive) return;
+    function captureFrameBlob() {
+        return new Promise((resolve) => {
+            if (!liveVideo.videoWidth || !liveVideo.videoHeight) return resolve(null);
+            const targetHeight = 240;
+            const targetWidth = Math.max(1, Math.round((liveVideo.videoWidth / liveVideo.videoHeight) * targetHeight));
+            liveCanvas.width = targetWidth;
+            liveCanvas.height = targetHeight;
+            const context = liveCanvas.getContext("2d");
+            if (!context) return resolve(null);
+            context.drawImage(liveVideo, 0, 0, targetWidth, targetHeight);
+            liveCanvas.toBlob(resolve, "image/jpeg", 0.85);
+        });
+    }
 
-        isLiveAnalyzing = true;
-        setLiveBadge("analyzing", "Analyzing...");
-        liveStreamState.textContent = "Forward pass in progress...";
-
-        const formData = new FormData();
-        for (let i = 0; i < framesToSend.length; i++) {
-            formData.append("frames", framesToSend[i], "frame_" + i + ".jpg");
+    async function captureFiveSecondWindow(revision) {
+        const frames = [];
+        const startedAt = performance.now();
+        const interval = LIVE_WINDOW_MS / (LIVE_FRAME_COUNT - 1);
+        for (let index = 0; index < LIVE_FRAME_COUNT; index += 1) {
+            if (index > 0 && !await waitUntil(startedAt + interval * index, revision)) return null;
+            if (!live.active || live.revision !== revision) return null;
+            const frame = await captureFrameBlob();
+            if (!frame) return null;
+            frames.push(frame);
+            const elapsed = Math.min(LIVE_WINDOW_MS, performance.now() - startedAt);
+            liveBufferCounter.textContent = frames.length + " / " + LIVE_FRAME_COUNT + " frames · " +
+                (elapsed / 1000).toFixed(1) + " / 5.0s";
+            progressBar.style.width = Math.min(100, elapsed / LIVE_WINDOW_MS * 100) + "%";
         }
+        return {
+            frames,
+            durationMs: Math.round(performance.now() - startedAt),
+            number: ++live.windowNumber
+        };
+    }
+
+    async function analyzeLiveWindow(windowData, revision) {
+        if (!live.active || revision !== live.revision) return;
+        live.analyzing = true;
+        const body = new FormData();
+        windowData.frames.forEach((frame, index) => body.append("frames", frame, "frame_" + index + ".jpg"));
+        body.append("source_type", live.source);
+        body.append("captured_duration_ms", String(windowData.durationMs));
+        body.append("window_id", String(windowData.number));
+        liveStreamState.textContent = "Analyzing window #" + windowData.number;
 
         try {
-            const response = await fetch(LIVE_PREDICT_URL, {
-                method: "POST",
-                body: formData
-            });
-
-            // Session guard: nếu camera đã dừng hoặc session thay đổi trong lúc request chạy
-            if (sessionId !== currentSessionId || !cameraActive) {
-                console.log("[LiveCamera] Discarding response from outdated session:", sessionId);
-                return;
-            }
-
+            const response = await fetch(LIVE_PREDICT_URL, { method: "POST", body });
+            if (!live.active || revision !== live.revision) return;
             if (response.status === 429) {
-                // Model đang bận (429) -> Không tính là Safe hoặc Hazard, bảo toàn bộ đếm smoothing
-                console.log("[LiveCamera] HTTP 429 received (model busy). Consecutive Hazard count preserved at: " + consecutiveHazardCount);
-                setLiveBadge("busy", "Model Busy");
-                liveStreamState.textContent = "Model busy (HTTP 429), retrying next window...";
-                setLiveHint("GPU/Model is currently processing another task. Skipping this window.", false);
+                setLiveHint("Model is busy. The newest completed window will be used next.", false);
                 return;
             }
-
-            if (!response.ok) {
-                const errMsg = await extractErrorMessage(response);
-                console.log("[LiveCamera] HTTP error (" + response.status + "): " + errMsg + ". Consecutive Hazard count preserved at: " + consecutiveHazardCount);
-                liveStreamState.textContent = "Error (" + response.status + ")";
-                renderLiveError("Live Analysis Error", errMsg);
-                return;
-            }
-
+            if (!response.ok) throw new Error(await extractErrorMessage(response));
             const data = await response.json();
-            if (sessionId !== currentSessionId || !cameraActive) return;
-
-            const rawStatus = data.status; // "Safe" hoặc "Hazard"
-            const confidence = data.hazard_confidence;
-
-            console.log("[LiveCamera] Window analysis finished.");
-            console.log("[LiveCamera] -> Raw backend prediction: status=" + rawStatus + ", confidence=" + confidence);
-
-            // ==============================================================
-            // Temporal Smoothing Logic:
-            // Chỉ cảnh báo Hazard khi có ít nhất 2 cửa sổ liên tiếp dự đoán Hazard.
-            // ==============================================================
-            if (rawStatus === "Hazard") {
-                consecutiveHazardCount++;
-            } else {
-                consecutiveHazardCount = 0;
-            }
-
-            console.log(
-                "[LiveCamera] -> Consecutive Hazard count: " + consecutiveHazardCount + 
-                " / " + REQUIRED_CONSECUTIVE_HAZARDS + " required"
-            );
-
-            let smoothedStatus = "Safe";
-            if (consecutiveHazardCount >= REQUIRED_CONSECUTIVE_HAZARDS) {
-                smoothedStatus = "Hazard";
-            } else {
-                smoothedStatus = "Safe";
-            }
-            lastSmoothedStatus = smoothedStatus;
-
-            console.log("[LiveCamera] -> Displayed status (smoothed): " + smoothedStatus);
-
-            const displayData = {
-                status: smoothedStatus,
-                hazard_confidence: confidence,
-                detected_actions: data.detected_actions || []
-            };
-
-            const now = new Date();
-            const timeStr = now.toLocaleTimeString();
-
-            // Hiển thị thông điệp ngữ cảnh rõ ràng
-            let subtitle = "Live window (" + timeStr + ")";
-            if (rawStatus === "Hazard" && smoothedStatus === "Safe") {
-                subtitle = "Live window (" + timeStr + ") - Single hazard window (1/" + REQUIRED_CONSECUTIVE_HAZARDS + "), verifying...";
-                setLiveHint("Potential hazard detected in 1 window. Verifying next window before triggering alert.", false);
-            } else if (smoothedStatus === "Hazard") {
-                subtitle = "Live window (" + timeStr + ") - CONFIRMED HAZARD (" + consecutiveHazardCount + " consecutive windows)";
-                setLiveHint("Warning: Workplace hazard confirmed across multiple consecutive windows!", true);
-            } else {
-                setLiveHint("", false);
-            }
-
-            renderLiveResult(displayData, subtitle);
-            liveStreamState.textContent = "Result updated: " + smoothedStatus + " at " + timeStr;
-        } catch (err) {
-            if (sessionId !== currentSessionId || !cameraActive) return;
-            console.log("[LiveCamera] Network error: " + err.message + ". Consecutive Hazard count preserved at: " + consecutiveHazardCount);
-            liveStreamState.textContent = "Network error";
-            setLiveHint("Network error while sending live frames to backend.", true);
+            const rawHazard = String(data.status).toLowerCase() === "hazard";
+            live.consecutiveHazards = rawHazard ? live.consecutiveHazards + 1 : 0;
+            const confirmedHazard = live.consecutiveHazards >= REQUIRED_CONSECUTIVE_HAZARDS;
+            const displayData = Object.assign({}, data, { status: confirmedHazard ? "Hazard" : "Safe" });
+            let subtitle = "Five-second window #" + windowData.number;
+            if (rawHazard && !confirmedHazard) subtitle += " · potential hazard, verifying next window";
+            if (confirmedHazard) subtitle += " · confirmed across consecutive windows";
+            liveResultBody.innerHTML = buildResultCardHtml(displayData, subtitle);
+            setLiveHint(rawHazard && !confirmedHazard
+                ? "A potential hazard was detected once; one more consecutive window is required for an alert."
+                : "", false);
+        } catch (error) {
+            if (live.active && revision === live.revision) renderError(liveResultBody, "Live analysis failed", error.message);
         } finally {
-            isLiveAnalyzing = false;
-            if (cameraActive && sessionId === currentSessionId && !isWarmingUp) {
-                setLiveBadge("streaming", "Monitoring");
+            live.analyzing = false;
+            if (live.active && revision === live.revision && live.pendingWindow) {
+                const newest = live.pendingWindow;
+                live.pendingWindow = null;
+                void analyzeLiveWindow(newest, revision);
             }
         }
     }
 
-    // Vòng lặp lấy mẫu frames
-    async function sampleLiveFrame(sessionId) {
-        if (!cameraActive || sessionId !== currentSessionId || isWarmingUp) return;
-
-        const blob = await captureFrameBlob();
-        if (!blob || !cameraActive || sessionId !== currentSessionId || isWarmingUp) return;
-
-        frameBuffer.push(blob);
-        liveBufferCounter.textContent = frameBuffer.length + " / " + LIVE_NUM_FRAMES + " frames";
-        console.log("[LiveCamera] Collected frame: " + frameBuffer.length + " / " + LIVE_NUM_FRAMES);
-
-        // Khi buffer đạt đủ 16 frames
-        if (frameBuffer.length >= LIVE_NUM_FRAMES) {
-            const snapshot = frameBuffer.slice(0, LIVE_NUM_FRAMES);
-            
-            // Giữ lại sliding window (trượt 8 frames để cửa sổ kế tiếp chỉ cần 8 frame mới = ~2.6s)
-            frameBuffer = frameBuffer.slice(8);
-
-            // Gửi snapshot nếu không đang bận inference
-            if (!isLiveAnalyzing) {
-                triggerLiveInference(snapshot, sessionId);
-            } else {
-                liveStreamState.textContent = "Analyzing previous window...";
-                console.log("[LiveCamera] Previous inference still in progress, waiting for next cycle.");
-            }
-        }
-    }
-
-    async function startCamera() {
-        if (cameraActive) return;
-
-        setLiveHint("");
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            setLiveHint("Browser does not support camera access (getUserMedia). Please use Chrome, Edge, or Firefox.", true);
+    function queueLiveWindow(windowData, revision) {
+        if (live.analyzing) {
+            live.pendingWindow = windowData;
+            liveStreamState.textContent = "Recording continues · newest window queued";
             return;
         }
+        void analyzeLiveWindow(windowData, revision);
+    }
 
+    async function captureLoop(revision) {
+        while (live.active && revision === live.revision) {
+            setLiveBadge("streaming", "Recording");
+            liveStreamState.textContent = "Recording a complete five-second window";
+            progressBar.style.width = "0%";
+            const windowData = await captureFiveSecondWindow(revision);
+            if (!windowData || !live.active || revision !== live.revision) break;
+            progressBar.style.width = "100%";
+            queueLiveWindow(windowData, revision);
+        }
+    }
+
+    async function beginLiveStream(stream, revision) {
+        if (revision !== live.revision) {
+            stream.getTracks().forEach((track) => track.stop());
+            return;
+        }
+        live.stream = stream;
+        liveVideo.srcObject = stream;
+        liveVideo.style.display = "block";
+        livePlaceholder.style.display = "none";
+        await liveVideo.play();
+        live.active = true;
+        liveStartBtn.disabled = true;
+        liveStopBtn.disabled = false;
+        setLiveBadge("warming", "Warming up");
+        liveStreamState.textContent = "Stabilizing exposure and focus";
+        liveBufferCounter.textContent = "Warm-up 2.5s";
+        const ready = await waitUntil(performance.now() + CAMERA_WARMUP_MS, revision);
+        if (!ready) return;
+        void captureLoop(revision);
+    }
+
+    async function refreshCameraDevices() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const current = cameraDeviceSelect.value;
+        cameraDeviceSelect.innerHTML = '<option value="">Default camera</option>';
+        devices.filter((device) => device.kind === "videoinput").forEach((device, index) => {
+            const option = document.createElement("option");
+            option.value = device.deviceId;
+            option.textContent = device.label || "Camera " + (index + 1);
+            cameraDeviceSelect.appendChild(option);
+        });
+        if ([...cameraDeviceSelect.options].some((option) => option.value === current)) cameraDeviceSelect.value = current;
+    }
+
+    async function startComputerCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            setLiveHint("This browser does not support camera access.", true);
+            return;
+        }
+        const revision = ++live.revision;
+        setLiveBadge("streaming", "Connecting");
         try {
-            currentSessionId++;
-            const thisSession = currentSessionId;
-
-            setLiveBadge("streaming", "Connecting...");
-            liveStreamState.textContent = "Requesting camera permission...";
-
-            cameraStream = await navigator.mediaDevices.getUserMedia({
+            const deviceId = cameraDeviceSelect.value;
+            const stream = await navigator.mediaDevices.getUserMedia({
                 video: {
-                    width: { ideal: 640 },
-                    height: { ideal: 480 },
-                    facingMode: "user"
+                    deviceId: deviceId ? { exact: deviceId } : undefined,
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    frameRate: { ideal: 30, max: 30 }
                 },
                 audio: false
             });
-
-            // Nếu người dùng đã nhấn Stop trong lúc chờ quyền
-            if (thisSession !== currentSessionId) {
-                cameraStream.getTracks().forEach(function (t) { t.stop(); });
-                cameraStream = null;
-                return;
-            }
-
-            cameraActive = true;
-            isWarmingUp = true;
-            consecutiveHazardCount = 0;
-            lastSmoothedStatus = "Safe";
-            frameBuffer = [];
-            renderLiveEmpty();
-
-            liveVideo.srcObject = cameraStream;
-            liveVideo.style.display = "block";
-            livePlaceholder.style.display = "none";
-
-            liveStartBtn.disabled = true;
-            liveStopBtn.disabled = false;
-
-            // Warm-up UI
-            setLiveBadge("warming", "Warming Up");
-            liveStreamState.textContent = "Camera warming up (stabilizing image)...";
-            liveBufferCounter.textContent = "Stabilizing (2.5s)...";
-            setLiveHint("Camera is warming up to stabilize auto-exposure and focus.", false);
-
-            console.log("[LiveCamera] Camera started (Session #" + thisSession + ") at " + new Date().toISOString() + ". Warming up for " + (WARMUP_DURATION_MS / 1000) + "s...");
-
-            // Bắt đầu timer warm-up; chỉ sau khi warm-up xong mới kích hoạt lấy mẫu frame
-            warmupTimer = setTimeout(function () {
-                if (thisSession !== currentSessionId || !cameraActive) return;
-                isWarmingUp = false;
-                warmupTimer = null;
-
-                console.log("[LiveCamera] Warm-up complete at " + new Date().toISOString() + ". Starting frame sampling at 3 FPS...");
-                setLiveBadge("streaming", "Monitoring");
-                liveStreamState.textContent = "Collecting frames (3 FPS)...";
-                liveBufferCounter.textContent = "0 / " + LIVE_NUM_FRAMES + " frames";
-                setLiveHint("", false);
-
-                // Bắt đầu timer lấy mẫu theo LIVE_SAMPLE_INTERVAL_MS (333ms / 3 FPS)
-                liveSampleTimer = setInterval(function () {
-                    sampleLiveFrame(thisSession);
-                }, LIVE_SAMPLE_INTERVAL_MS);
-            }, WARMUP_DURATION_MS);
-
-        } catch (err) {
-            console.error("Camera access error:", err);
-            cameraActive = false;
-            currentSessionId++;
-            setLiveBadge("idle", "Camera Off");
-            liveStreamState.textContent = "Camera unavailable";
-
-            if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-                setLiveHint("Camera permission was denied. Please allow camera access in browser settings.", true);
-            } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-                setLiveHint("No camera device found on this system.", true);
-            } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
-                setLiveHint("Camera is already in use by another application.", true);
-            } else {
-                setLiveHint("Could not access camera: " + (err.message || err.name), true);
-            }
+            await refreshCameraDevices();
+            await beginLiveStream(stream, revision);
+        } catch (error) {
+            setLiveBadge("idle", "Camera off");
+            setLiveHint("Could not open the computer camera: " + (error.message || error.name), true);
         }
     }
 
-    function stopCamera() {
-        console.log("[LiveCamera] Camera stopped (Session #" + currentSessionId + ") at " + new Date().toISOString());
-        cameraActive = false;
-        currentSessionId++; // Vô hiệu hóa mọi request pending của session vừa rồi
+    // ------------------------------------------------------------------
+    // Phone pairing and WebRTC receiving side.
+    // ------------------------------------------------------------------
+    function websocketUrl(path) {
+        return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + path;
+    }
 
-        if (warmupTimer) {
-            clearTimeout(warmupTimer);
-            warmupTimer = null;
+    function sendSignal(payload) {
+        if (live.signalingSocket && live.signalingSocket.readyState === WebSocket.OPEN) {
+            live.signalingSocket.send(JSON.stringify(payload));
         }
+    }
 
-        if (liveSampleTimer) {
-            clearInterval(liveSampleTimer);
-            liveSampleTimer = null;
+    async function flushPendingIce() {
+        if (!live.peerConnection || !live.peerConnection.remoteDescription) return;
+        const candidates = live.pendingIce.splice(0);
+        for (const candidate of candidates) await live.peerConnection.addIceCandidate(candidate);
+    }
+
+    async function createHostPeerConnection() {
+        if (!live.phoneSession || !live.signalingSocket) return;
+        if (live.peerConnection) live.peerConnection.close();
+        const revision = live.revision;
+        const peer = new RTCPeerConnection({ iceServers: live.phoneSession.ice_servers || [] });
+        live.peerConnection = peer;
+        live.pendingIce = [];
+        peer.addTransceiver("video", { direction: "recvonly" });
+        peer.onicecandidate = (event) => {
+            if (event.candidate) sendSignal({ type: "ice_candidate", candidate: event.candidate });
+        };
+        peer.ontrack = (event) => {
+            const stream = event.streams[0] || new MediaStream([event.track]);
+            void beginLiveStream(stream, revision);
+        };
+        peer.onconnectionstatechange = () => {
+            if (["failed", "disconnected", "closed"].includes(peer.connectionState) && live.source === "phone_camera") {
+                setLiveBadge("idle", "Phone disconnected");
+                liveStreamState.textContent = "Waiting for the phone to reconnect";
+            }
+        };
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        sendSignal({ type: "offer", sdp: peer.localDescription });
+    }
+
+    function connectHostSignaling() {
+        const session = live.phoneSession;
+        const path = CAMERA_SESSIONS_URL + "/ws/" + encodeURIComponent(session.session_id) +
+            "?role=host&token=" + encodeURIComponent(session.host_token);
+        const socket = new WebSocket(websocketUrl(path));
+        live.signalingSocket = socket;
+        socket.onopen = () => {
+            setLiveBadge("streaming", "Waiting for phone");
+            liveStreamState.textContent = "Scan the QR code on the phone";
+        };
+        socket.onmessage = async (event) => {
+            const message = JSON.parse(event.data);
+            if (message.type === "peer_joined" && message.role === "phone") {
+                setLiveBadge("streaming", "Phone connected");
+                await createHostPeerConnection();
+            } else if (message.type === "answer" && live.peerConnection) {
+                await live.peerConnection.setRemoteDescription(message.sdp);
+                await flushPendingIce();
+            } else if (message.type === "ice_candidate" && message.candidate) {
+                if (live.peerConnection && live.peerConnection.remoteDescription) {
+                    await live.peerConnection.addIceCandidate(message.candidate);
+                } else {
+                    live.pendingIce.push(message.candidate);
+                }
+            } else if (message.type === "peer_left") {
+                ++live.revision;
+                stopMediaOnly();
+                setLiveBadge("idle", "Phone disconnected");
+                liveStreamState.textContent = "Waiting for the phone to reconnect";
+            }
+        };
+        socket.onclose = () => {
+            if (live.source === "phone_camera" && live.phoneSession) setLiveHint("Phone signaling connection closed.", true);
+        };
+    }
+
+    async function startPhoneCamera() {
+        if (!window.RTCPeerConnection) {
+            setLiveHint("This browser does not support WebRTC.", true);
+            return;
         }
-
-        if (cameraStream) {
-            cameraStream.getTracks().forEach(function (track) {
-                track.stop();
-            });
-            cameraStream = null;
+        if (location.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(location.hostname)) {
+            setLiveHint("Phone camera access requires HTTPS. Start the server with SSL_CERTFILE and SSL_KEYFILE.", true);
         }
-
-        if (liveVideo) {
-            liveVideo.srcObject = null;
-            liveVideo.style.display = "none";
+        ++live.revision;
+        liveStartBtn.disabled = true;
+        setLiveBadge("streaming", "Creating session");
+        try {
+            const response = await fetch(CAMERA_SESSIONS_URL, { method: "POST" });
+            if (!response.ok) throw new Error(await extractErrorMessage(response));
+            live.phoneSession = await response.json();
+            phoneQr.src = live.phoneSession.qr_url;
+            phoneJoinLink.href = live.phoneSession.join_url;
+            phoneJoinLink.textContent = live.phoneSession.join_url;
+            phoneAddressMode.textContent = live.phoneSession.address_mode === "mdns"
+                ? "Stable local hostname · no IP changes required"
+                : "LAN address detected automatically";
+            const hasFallback = live.phoneSession.fallback_join_url &&
+                live.phoneSession.fallback_join_url !== live.phoneSession.join_url;
+            phoneFallbackWrap.hidden = !hasFallback;
+            if (hasFallback) phoneFallbackLink.href = live.phoneSession.fallback_join_url;
+            phoneSessionEmpty.hidden = true;
+            phoneSessionDetails.hidden = false;
+            phoneSessionExpiry.textContent = "Link expires in 5 minutes";
+            setLiveHint(
+                live.phoneSession.address_mode === "mdns"
+                    ? "QR uses industrial-safety.local. Both devices must be on the same network."
+                    : "QR uses the laptop's current LAN IP, detected automatically.",
+                false
+            );
+            liveStopBtn.disabled = false;
+            connectHostSignaling();
+        } catch (error) {
+            liveStartBtn.disabled = false;
+            setLiveBadge("idle", "Not connected");
+            setLiveHint("Could not create phone connection: " + error.message, true);
         }
+    }
 
-        // Reset toàn bộ trạng thái warm-up và smoothing
-        isWarmingUp = false;
-        frameBuffer = [];
-        isLiveAnalyzing = false;
-        consecutiveHazardCount = 0;
-        lastSmoothedStatus = "Safe";
-
-        // Xóa hoàn toàn trạng thái Hazard cũ trên giao diện
-        renderLiveEmpty();
-        setLiveHint("", false);
-
+    function stopMediaOnly() {
+        live.active = false;
+        cancelWaiters();
+        if (live.stream) live.stream.getTracks().forEach((track) => track.stop());
+        live.stream = null;
+        liveVideo.srcObject = null;
+        liveVideo.style.display = "none";
         livePlaceholder.style.display = "flex";
+        live.pendingWindow = null;
+        live.analyzing = false;
+        progressBar.style.width = "0%";
+        liveBufferCounter.textContent = "0 / 16 frames";
+    }
+
+    async function stopLiveSource() {
+        const previousSession = live.phoneSession;
+        ++live.revision;
+        stopMediaOnly();
+        if (live.peerConnection) live.peerConnection.close();
+        if (live.signalingSocket) live.signalingSocket.close();
+        live.peerConnection = null;
+        live.signalingSocket = null;
+        live.phoneSession = null;
+        live.pendingIce = [];
+        live.windowNumber = 0;
+        live.consecutiveHazards = 0;
+        phoneSessionDetails.hidden = true;
+        phoneSessionEmpty.hidden = false;
+        phoneFallbackWrap.hidden = true;
+        phoneQr.removeAttribute("src");
+        if (previousSession) {
+            const url = CAMERA_SESSIONS_URL + "/" + encodeURIComponent(previousSession.session_id) +
+                "?host_token=" + encodeURIComponent(previousSession.host_token);
+            fetch(url, { method: "DELETE", keepalive: true }).catch(() => {});
+        }
         liveStartBtn.disabled = false;
         liveStopBtn.disabled = true;
-        setLiveBadge("idle", "Camera Off");
-        liveBufferCounter.textContent = "0 / " + LIVE_NUM_FRAMES + " frames";
-        liveStreamState.textContent = "Stopped";
+        setLiveBadge("idle", "Camera off");
+        liveStreamState.textContent = "Idle";
+        setLiveHint("", false);
     }
 
-    liveStartBtn.addEventListener("click", startCamera);
-    liveStopBtn.addEventListener("click", stopCamera);
+    async function switchSource(source) {
+        if (source === live.source) return;
+        await stopLiveSource();
+        live.source = source;
+        Object.entries(sourceButtons).forEach(([key, button]) => {
+            const active = key === source;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-selected", String(active));
+        });
+        const upload = source === "upload";
+        uploadView.hidden = !upload;
+        uploadView.classList.toggle("active", upload);
+        liveView.hidden = upload;
+        liveView.classList.toggle("active", !upload);
+        if (upload) return;
 
-    // ======================================================================
-    // TAB SWITCHING MANAGEMENT
-    // ======================================================================
-    function switchTab(target) {
-        if (target === "video") {
-            // Khi chuyển sang tab Video: dừng camera để giải phóng tài nguyên
-            if (cameraActive) {
-                stopCamera();
-            }
-            tabBtnVideo.classList.add("active");
-            tabBtnVideo.setAttribute("aria-selected", "true");
-            tabBtnLive.classList.remove("active");
-            tabBtnLive.setAttribute("aria-selected", "false");
-
-            tabContentVideo.classList.add("active");
-            tabContentVideo.hidden = false;
-            tabContentLive.classList.remove("active");
-            tabContentLive.hidden = true;
-        } else if (target === "live") {
-            tabBtnLive.classList.add("active");
-            tabBtnLive.setAttribute("aria-selected", "true");
-            tabBtnVideo.classList.remove("active");
-            tabBtnVideo.setAttribute("aria-selected", "false");
-
-            tabContentLive.classList.add("active");
-            tabContentLive.hidden = false;
-            tabContentVideo.classList.remove("active");
-            tabContentVideo.hidden = true;
-        }
+        const phone = source === "phone_camera";
+        computerControls.hidden = phone;
+        phoneControls.hidden = !phone;
+        liveHeading.textContent = phone ? "Phone camera" : "Computer camera";
+        liveDescription.textContent = phone
+            ? "Scan the QR code to stream a phone camera. Analysis begins only after each complete five-second window."
+            : "Preview remains live while 16 frames are recorded across exactly five seconds for each analysis.";
+        liveStartLabel.textContent = phone ? "Create phone connection" : "Start camera";
+        livePlaceholderTitle.textContent = phone ? "No phone connected" : "Camera is currently inactive";
+        livePlaceholderSub.textContent = phone
+            ? "Create a connection and scan the QR code on the phone."
+            : "Click Start camera to begin real-time safety monitoring.";
+        resetLiveResult();
+        if (!phone) refreshCameraDevices().catch(() => {});
     }
 
-    tabBtnVideo.addEventListener("click", function () {
-        switchTab("video");
+    sourceButtons.upload.addEventListener("click", () => void switchSource("upload"));
+    sourceButtons.computer_camera.addEventListener("click", () => void switchSource("computer_camera"));
+    sourceButtons.phone_camera.addEventListener("click", () => void switchSource("phone_camera"));
+    refreshCamerasBtn.addEventListener("click", () => refreshCameraDevices().catch((error) => setLiveHint(error.message, true)));
+    liveStartBtn.addEventListener("click", () => {
+        if (live.source === "computer_camera") void startComputerCamera();
+        if (live.source === "phone_camera") void startPhoneCamera();
+    });
+    liveStopBtn.addEventListener("click", () => void stopLiveSource());
+    copyPhoneLinkBtn.addEventListener("click", async () => {
+        if (!live.phoneSession) return;
+        await navigator.clipboard.writeText(live.phoneSession.join_url);
+        copyPhoneLinkBtn.textContent = "Copied";
+        setTimeout(() => { copyPhoneLinkBtn.textContent = "Copy link"; }, 1200);
     });
 
-    tabBtnLive.addEventListener("click", function () {
-        switchTab("live");
+    window.addEventListener("beforeunload", () => {
+        ++live.revision;
+        stopMediaOnly();
+        if (live.peerConnection) live.peerConnection.close();
+        if (live.signalingSocket) live.signalingSocket.close();
     });
 
-    // Dọn dẹp media streams khi người dùng đóng trang hoặc reload
-    window.addEventListener("beforeunload", function () {
-        stopCamera();
-    });
-
-    // Khởi tạo trạng thái ban đầu
-    renderEmpty();
-    renderLiveEmpty();
+    resetUpload();
+    resetLiveResult();
 })();

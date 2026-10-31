@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Industrial Safety System</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=20261031-1">
 </head>
 <body>
     <div class="app-shell">
@@ -19,8 +19,16 @@
             <p class="topbar-note">Workplace hazard detection · VideoMAE Multi-task</p>
         </header>
 
-        <!-- Tab Switcher -->
-        <nav class="tab-nav" role="tablist" aria-label="Detection modes">
+        <!-- A single source selector controls the shared analysis workspace. -->
+        <section class="source-switcher" aria-labelledby="source-switcher-title">
+            <div class="source-switcher-heading">
+                <div>
+                    <p class="source-switcher-kicker">Input source</p>
+                    <h2 id="source-switcher-title">Choose how to analyze video</h2>
+                </div>
+                <span class="source-switcher-note">Only one source runs at a time</span>
+            </div>
+            <nav class="tab-nav source-selector" role="tablist" aria-label="Video source">
             <button
                 type="button"
                 id="tab-btn-video"
@@ -29,34 +37,53 @@
                 aria-selected="true"
                 aria-controls="tab-content-video"
             >
-                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
-                    <line x1="7" y1="2" x2="7" y2="22"></line>
-                    <line x1="17" y1="2" x2="17" y2="22"></line>
-                    <line x1="2" y1="12" x2="22" y2="12"></line>
-                    <line x1="2" y1="7" x2="7" y2="7"></line>
-                    <line x1="2" y1="17" x2="7" y2="17"></line>
-                    <line x1="17" y1="17" x2="22" y2="17"></line>
-                    <line x1="17" y1="7" x2="22" y2="7"></line>
-                </svg>
-                <span>Video Analysis</span>
+                <span class="source-icon" aria-hidden="true">
+                    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"></path>
+                        <path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"></path>
+                    </svg>
+                </span>
+                <span class="source-copy"><strong>Upload file</strong><small>Analyze recorded footage</small></span>
+                <span class="source-check" aria-hidden="true">✓</span>
             </button>
             <button
                 type="button"
-                id="tab-btn-live"
+                id="tab-btn-computer"
                 class="tab-btn"
                 role="tab"
                 aria-selected="false"
                 aria-controls="tab-content-live"
             >
-                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M23 7l-7 5 7 5V7z"></path>
-                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
-                </svg>
-                <span>Live Camera</span>
-                <span class="live-dot" aria-hidden="true"></span>
+                <span class="source-icon" aria-hidden="true">
+                    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="5" width="14" height="14" rx="3"></rect>
+                        <path d="m17 10 4-2v8l-4-2"></path>
+                        <circle cx="10" cy="12" r="2.5"></circle>
+                    </svg>
+                </span>
+                <span class="source-copy"><strong>Computer camera</strong><small>Use a camera on this device</small></span>
+                <span class="source-check" aria-hidden="true">✓</span>
             </button>
-        </nav>
+            <button
+                type="button"
+                id="tab-btn-phone"
+                class="tab-btn"
+                role="tab"
+                aria-selected="false"
+                aria-controls="tab-content-live"
+            >
+                <span class="source-icon" aria-hidden="true">
+                    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="6" y="2" width="12" height="20" rx="3"></rect>
+                        <path d="M10 5h4"></path>
+                        <circle cx="12" cy="18" r="1"></circle>
+                    </svg>
+                </span>
+                <span class="source-copy"><strong>Phone camera</strong><small>Pair a phone using a QR code</small></span>
+                <span class="source-check" aria-hidden="true">✓</span>
+            </button>
+            </nav>
+        </section>
 
         <!-- TAB 1: VIDEO ANALYSIS (Bao toan 100% cac element cu) -->
         <div id="tab-content-video" class="tab-content active" role="tabpanel" aria-labelledby="tab-btn-video">
@@ -133,16 +160,51 @@
             </main>
         </div>
 
-        <!-- TAB 2: LIVE CAMERA (Khu vuc camera truc tiep va ket qua doc lap) -->
-        <div id="tab-content-live" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-live" hidden>
+        <!-- Shared live workspace for both the computer and paired phone camera. -->
+        <div id="tab-content-live" class="tab-content" role="tabpanel" hidden>
             <main class="layout">
                 <section class="panel live-camera-panel" aria-labelledby="live-heading">
                     <div class="panel-header">
                         <div class="panel-header-with-badge">
-                            <h2 id="live-heading">Live Camera Feed</h2>
+                            <h2 id="live-heading">Computer camera</h2>
                             <span id="live-status-badge" class="status-badge badge-idle">Camera Off</span>
                         </div>
-                        <p>Real-time workplace surveillance. The system collects a 16-frame sliding window (3 FPS) for hazard monitoring.</p>
+                        <p id="live-description">Preview remains live while the system records 16 frames across exactly 5 seconds for each analysis.</p>
+                    </div>
+
+                    <div id="computer-controls" class="source-controls">
+                        <label class="field-label" for="camera-device-select">Camera device</label>
+                        <div class="inline-controls">
+                            <select id="camera-device-select" class="select-input">
+                                <option value="">Default camera</option>
+                            </select>
+                            <button type="button" id="refresh-cameras-btn" class="btn btn-ghost btn-compact">Refresh</button>
+                        </div>
+                    </div>
+
+                    <div id="phone-controls" class="source-controls phone-pairing" hidden>
+                        <div id="phone-session-empty">
+                            <p>Generate a secure connection, then scan the QR code with the phone that will provide the camera.</p>
+                            <p class="certificate-help">
+                                First-time setup: install the
+                                <a href="certs/industrial-safety-ca.cer" download>Industrial Safety CA certificate</a>
+                                on the phone and mark it as trusted.
+                            </p>
+                        </div>
+                        <div id="phone-session-details" class="phone-session-details" hidden>
+                            <img id="phone-qr" class="phone-qr" alt="QR code for phone camera connection">
+                            <div class="phone-session-copy">
+                                <strong>Scan to connect</strong>
+                                <a id="phone-join-link" href="#" target="_blank" rel="noopener"></a>
+                                <span id="phone-address-mode" class="session-expiry"></span>
+                                <span id="phone-fallback-wrap" class="phone-fallback" hidden>
+                                    If the hostname is unavailable, use
+                                    <a id="phone-fallback-link" href="#" target="_blank" rel="noopener">the direct LAN link</a>.
+                                </span>
+                                <button type="button" id="copy-phone-link-btn" class="btn btn-ghost btn-compact">Copy link</button>
+                                <span id="phone-session-expiry" class="session-expiry"></span>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="live-feed-container">
@@ -154,8 +216,8 @@
                                     <rect x="4" y="10" width="24" height="28" rx="4"/>
                                 </svg>
                             </div>
-                            <p class="live-placeholder-title">Camera is currently inactive</p>
-                            <p class="live-placeholder-sub">Click "Start Camera" to begin real-time safety monitoring.</p>
+                            <p class="live-placeholder-title" id="live-placeholder-title">Camera is currently inactive</p>
+                            <p class="live-placeholder-sub" id="live-placeholder-sub">Click "Start camera" to begin real-time safety monitoring.</p>
                         </div>
                         <!-- Canvas an de chup frames thanh JPEG -->
                         <canvas id="live-canvas" hidden></canvas>
@@ -163,7 +225,7 @@
 
                     <div class="live-stream-bar">
                         <div class="stream-stat">
-                            <span class="stat-label">Buffer Window</span>
+                            <span class="stat-label">5-second window</span>
                             <strong id="live-buffer-counter">0 / 16 frames</strong>
                         </div>
                         <div class="stream-stat">
@@ -171,11 +233,14 @@
                             <span id="live-stream-state">Idle</span>
                         </div>
                     </div>
+                    <div class="capture-progress" aria-hidden="true">
+                        <span id="capture-progress-bar"></span>
+                    </div>
 
                     <div class="actions">
                         <button type="button" id="live-start-btn" class="btn btn-primary">
                             <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                            <span>Start Camera</span>
+                            <span id="live-start-label">Start camera</span>
                         </button>
                         <button type="button" id="live-stop-btn" class="btn btn-ghost" disabled>
                             <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
@@ -187,8 +252,8 @@
 
                 <section class="panel result-panel" aria-labelledby="live-result-heading" aria-live="polite">
                     <div class="panel-header">
-                        <h2 id="live-result-heading">Live Detection Result</h2>
-                        <p>Continuously updated per sliding window. Independent from uploaded video results.</p>
+                            <h2 id="live-result-heading">Live detection result</h2>
+                        <p>Each result is produced only after a complete five-second recording window.</p>
                     </div>
 
                     <div id="live-result-body">
@@ -203,6 +268,6 @@
         </div>
     </div>
 
-    <script src="js/app.js"></script>
+    <script src="js/app.js?v=20261031-1"></script>
 </body>
 </html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Phone Camera - Industrial Safety System</title>
+    <link rel="stylesheet" href="css/style.css?v=20261031-1">
+</head>
+<body class="phone-publisher-page">
+    <main class="phone-publisher-shell">
+        <header>
+            <p class="brand-kicker">Industrial Safety System</p>
+            <h1>Phone camera</h1>
+            <p class="phone-help">Keep this page open while the computer analyzes the camera stream.</p>
+        </header>
+
+        <section class="phone-preview-card">
+            <video id="phone-video" autoplay playsinline muted></video>
+            <div id="phone-camera-placeholder" class="phone-camera-placeholder">Camera is off</div>
+            <span id="phone-status" class="status-badge badge-idle">Not connected</span>
+        </section>
+
+        <label class="field-label" for="phone-facing-mode">Camera</label>
+        <select id="phone-facing-mode" class="select-input">
+            <option value="environment">Back camera</option>
+            <option value="user">Front camera</option>
+        </select>
+
+        <div class="actions phone-actions">
+            <button id="phone-start-btn" class="btn btn-primary" type="button">Connect camera</button>
+            <button id="phone-stop-btn" class="btn btn-ghost" type="button" disabled>Disconnect</button>
+        </div>
+        <p id="phone-message" class="form-hint" role="status"></p>
+    </main>
+    <script src="js/phone.js?v=20261031-1"></script>
+</body>
+</html>

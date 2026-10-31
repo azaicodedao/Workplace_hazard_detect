@@ -22,12 +22,9 @@ Lock strategy:
     dam bao duoc giai phong ca khi inference sinh ra exception.
 
 Live camera config:
-    LIVE_NUM_FRAMES        -- so frames yeu cau (16, khop voi VideoMAE)
-    LIVE_SAMPLE_INTERVAL_MS -- khoang thoi gian frontend lay mau 1 frame (ms)
-                              16 frames x 333ms ~ 5.3 giay cua so quan sat.
-                              Day la gia tri thu nghiem, chua xac nhan la
-                              tuong thich hoan toan voi phan bo thoi gian
-                              cua du lieu huan luyen.
+    LIVE_NUM_FRAMES -- 16 frames required by VideoMAE.
+    The browser captures frame 0 immediately and frame 15 at 5000ms,
+    producing an exact five-second observation window.
 """
 
 import os
@@ -39,11 +36,16 @@ from typing import List
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.inference.predictor import VideoPredictor
 from app.schemas.prediction import PredictionResponse
+from app.config import (
+    LIVE_DURATION_TOLERANCE_MS,
+    LIVE_FRAME_COUNT,
+    LIVE_WINDOW_DURATION_MS,
+)
 
 router = APIRouter()
 
@@ -70,14 +72,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 # Live camera config (de thay doi de dang)
 # ---------------------------------------------------------------------------
-# So frames yeu cau -- phai khop voi VideoMAE (T=16), KHONG thay doi
-LIVE_NUM_FRAMES: int = 16
-
-# Khoang thoi gian lay mau o frontend (ms) -- chi de document, server khong enforce
-# 16 frames x 333ms = ~5.3 giay cua so quan sat
-# LUU Y: Gia tri nay chua duoc xac nhan la phu hop voi phan bo thoi gian
-# cua du lieu huan luyen. Dieu chinh neu ket qua inference bat thuong.
-LIVE_SAMPLE_INTERVAL_MS: int = 333
+# Backward-compatible name used by existing tests and documentation.
+LIVE_NUM_FRAMES: int = LIVE_FRAME_COUNT
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +194,12 @@ async def predict_video(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 @router.post("/predict/live/", response_model=PredictionResponse)
-async def predict_live(frames: List[UploadFile] = File(...)):
+async def predict_live(
+    frames: List[UploadFile] = File(...),
+    source_type: str = Form("computer_camera"),
+    captured_duration_ms: int = Form(LIVE_WINDOW_DURATION_MS),
+    window_id: str = Form(""),
+):
     """
     Phan tich 16 frame tu live camera.
 
@@ -218,14 +219,29 @@ async def predict_live(frames: List[UploadFile] = File(...)):
     if predictor is None:
         raise HTTPException(status_code=500, detail="Mo hinh AI chua duoc nap thanh cong.")
 
+    if source_type not in {"computer_camera", "phone_camera"}:
+        raise HTTPException(
+            status_code=422,
+            detail="source_type phai la computer_camera hoac phone_camera.",
+        )
+
+    if abs(captured_duration_ms - LIVE_WINDOW_DURATION_MS) > LIVE_DURATION_TOLERANCE_MS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Cua so live phai dai {LIVE_WINDOW_DURATION_MS}ms "
+                f"(+/- {LIVE_DURATION_TOLERANCE_MS}ms), nhan duoc {captured_duration_ms}ms."
+            ),
+        )
+
     # --- Kiem tra so luong frames ---
     if len(frames) != LIVE_NUM_FRAMES:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Yeu cau dung {LIVE_NUM_FRAMES} frames, nhan duoc {len(frames)}. "
-                f"(Cau hinh: {LIVE_NUM_FRAMES} frames x {LIVE_SAMPLE_INTERVAL_MS}ms "
-                f"~ {LIVE_NUM_FRAMES * LIVE_SAMPLE_INTERVAL_MS / 1000:.1f}s cua so quan sat)"
+                f"(Cau hinh: {LIVE_NUM_FRAMES} frames trong "
+                f"{LIVE_WINDOW_DURATION_MS / 1000:.1f}s cua so quan sat)"
             ),
         )
 
