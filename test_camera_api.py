@@ -67,7 +67,10 @@ class CameraSessionApiTests(unittest.TestCase):
                     "detected_actions": [],
                 }
 
-        with patch("app.api.routes.predictor", FakePredictor()):
+        with (
+            patch("app.api.routes.INFERENCE_BACKEND", "local"),
+            patch("app.api.routes.predictor", FakePredictor()),
+        ):
             response = self.client.post(
                 "/predict/live/",
                 files=files,
@@ -79,6 +82,54 @@ class CameraSessionApiTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["status"], "Safe")
+
+    def test_live_endpoint_forwards_original_frames_in_remote_mode(self):
+        image = np.zeros((48, 64, 3), dtype=np.uint8)
+        encoded, buffer = cv2.imencode(".jpg", image)
+        self.assertTrue(encoded)
+        frame_bytes = buffer.tobytes()
+        files = [
+            ("frames", (f"frame_{index}.jpg", frame_bytes, "image/jpeg"))
+            for index in range(16)
+        ]
+
+        class FakeRemoteClient:
+            configured = True
+
+            async def predict_frames(
+                inner_self,
+                frames,
+                source_type,
+                captured_duration_ms,
+                window_id,
+            ):
+                self.assertEqual(len(frames), 16)
+                self.assertTrue(all(frame[1] == frame_bytes for frame in frames))
+                self.assertEqual(source_type, "computer_camera")
+                self.assertEqual(captured_duration_ms, 5000)
+                self.assertEqual(window_id, "remote-window")
+                return {
+                    "status": "Hazard",
+                    "hazard_confidence": 0.9,
+                    "detected_actions": [],
+                }
+
+        with (
+            patch("app.api.routes.INFERENCE_BACKEND", "remote"),
+            patch("app.api.routes.remote_client", FakeRemoteClient()),
+        ):
+            response = self.client.post(
+                "/predict/live/",
+                files=files,
+                data={
+                    "source_type": "computer_camera",
+                    "captured_duration_ms": "5000",
+                    "window_id": "remote-window",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "Hazard")
 
 
 if __name__ == "__main__":

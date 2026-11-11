@@ -10,10 +10,29 @@ This system uses a pre-trained VideoMAE model to detect industrial hazards from 
 ## Video sources
 
 - **Upload file** sends the original video to `POST /predict/`. The existing full-video frame extraction and uniform sampling are unchanged.
-- **Computer camera** uses the browser camera and sends 16 JPEG frames captured from `0ms` through `5000ms` to `POST /predict/live/`.
+- **Computer camera** uses the browser camera and sends 16 JPEG frames captured from `0ms` through `5000ms` to `POST /predict/live/`. Live frames preserve up to 480p source resolution and use JPEG quality 0.92 before VideoMAE preprocessing.
 - **Phone camera** pairs through a one-time QR code and streams to the dashboard with WebRTC. The dashboard applies the same five-second live capture pipeline.
 
 The camera preview remains smooth while inference runs. Only one inference request runs at a time, and an older waiting window is replaced by the newest complete window to prevent latency buildup.
+
+## Kaggle GPU inference
+
+The browser always calls the local FastAPI server. In `remote` mode, the local
+server securely adds the bearer token and proxies uploads to the Kaggle GPU API;
+the token is never exposed to frontend JavaScript.
+
+Create `.env` from `.env.example` and set:
+
+```env
+INFERENCE_BACKEND=remote
+REMOTE_INFERENCE_URL=https://your-current-ngrok-domain
+REMOTE_INFERENCE_TOKEN=the-same-token-stored-in-kaggle
+REMOTE_INFERENCE_TIMEOUT_SECONDS=180
+```
+
+Check the connection at `GET /api/inference/health`. A Kaggle restart creates a
+new ngrok URL, so update `REMOTE_INFERENCE_URL` and restart the local server.
+Use `INFERENCE_BACKEND=local` to load and run the model on the local machine.
 
 ## Phone camera setup
 
@@ -42,5 +61,5 @@ python run.py
 ## Tests
 
 ```powershell
-python -m unittest test_live_window.py test_camera_sessions.py test_camera_api.py test_network_address.py test_warmup_and_smoothing.py
+python -m unittest test_live_window.py test_camera_sessions.py test_camera_api.py test_network_address.py test_warmup_and_smoothing.py test_remote_inference.py
 ```

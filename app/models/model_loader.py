@@ -42,6 +42,29 @@ def remap_videomae_attention_biases(state_dict):
 
     return remapped
 
+
+def add_missing_videomae_key_biases(state_dict, model_state):
+    """
+    Add zero Key-projection biases for transformers versions that expose them.
+
+    Older VideoMAE checkpoints only store Query and Value biases. A zero Key
+    bias is mathematically equivalent to the original bias-free projection and
+    keeps strict checkpoint validation enabled for every other parameter.
+    The operation is idempotent and does not overwrite checkpoint values.
+    """
+    added_keys = []
+    for key, model_value in model_state.items():
+        if key.endswith("attention.attention.key.bias") and key not in state_dict:
+            state_dict[key] = torch.zeros_like(model_value)
+            added_keys.append(key)
+
+    if added_keys:
+        print(
+            f"Added {len(added_keys)} zero key.bias tensors for "
+            "VideoMAE compatibility."
+        )
+    return state_dict
+
 def load_model(
     model_ckpt: str = "MCG-NJU/videomae-base", 
     weights_path: str = "models/best_multitask_videomae.pth", 
@@ -74,7 +97,10 @@ def load_model(
     checkpoint = torch.load(weights_path, map_location=device)
     state_dict = remap_videomae_attention_biases(checkpoint)
 
-    model_keys = set(model.state_dict().keys())
+    model_state = model.state_dict()
+    state_dict = add_missing_videomae_key_biases(state_dict, model_state)
+
+    model_keys = set(model_state.keys())
     ckpt_keys = set(state_dict.keys())
     missing_keys = sorted(model_keys - ckpt_keys)
     unexpected_keys = sorted(ckpt_keys - model_keys)

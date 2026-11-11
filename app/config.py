@@ -3,6 +3,11 @@
 import json
 import os
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
 
 LIVE_FRAME_COUNT = 16
 LIVE_WINDOW_DURATION_MS = 5_000
@@ -14,6 +19,19 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 PHONE_CAMERA_HOSTNAME = os.getenv("PHONE_CAMERA_HOSTNAME", "industrial-safety.local").strip().rstrip(".")
 ENABLE_MDNS = os.getenv("ENABLE_MDNS", "true").lower() in {"1", "true", "yes", "on"}
 APP_PORT = int(os.getenv("PORT", "8000"))
+
+INFERENCE_BACKEND = os.getenv("INFERENCE_BACKEND", "local").strip().lower()
+if INFERENCE_BACKEND not in {"local", "remote"}:
+    raise ValueError("INFERENCE_BACKEND must be 'local' or 'remote'")
+
+REMOTE_INFERENCE_URL = os.getenv("REMOTE_INFERENCE_URL", "").strip().rstrip("/")
+REMOTE_INFERENCE_TOKEN = os.getenv("REMOTE_INFERENCE_TOKEN", "").strip()
+REMOTE_INFERENCE_TIMEOUT_SECONDS = float(
+    os.getenv("REMOTE_INFERENCE_TIMEOUT_SECONDS", "180")
+)
+REMOTE_LIVE_TIMEOUT_SECONDS = float(
+    os.getenv("REMOTE_LIVE_TIMEOUT_SECONDS", "20")
+)
 
 
 def get_ice_servers():

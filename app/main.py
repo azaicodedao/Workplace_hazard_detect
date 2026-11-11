@@ -54,7 +54,7 @@ if os.path.exists(frontend_dir):
     # Khi người dùng truy cập trang chủ "/", tự động điều hướng tới giao diện web
     @app.get("/")
     def read_root():
-        return RedirectResponse(url="/static/index.html?v=20261031-1")
+        return RedirectResponse(url="/static/index.html?v=20261111-4")
 else:
     @app.get("/")
     def read_root():

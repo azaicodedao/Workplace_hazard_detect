@@ -7,6 +7,9 @@
     const ALLOWED_EXTENSIONS = [".mp4", ".avi", ".mov"];
     const LIVE_FRAME_COUNT = 16;
     const LIVE_WINDOW_MS = 5000;
+    const LIVE_CAPTURE_MAX_HEIGHT = 480;
+    const LIVE_JPEG_QUALITY = 0.92;
+    const LIVE_REQUEST_TIMEOUT_MS = 25000;
     const CAMERA_WARMUP_MS = 2500;
     const REQUIRED_CONSECUTIVE_HAZARDS = 2;
 
@@ -46,6 +49,9 @@
     const liveStopBtn = byId("live-stop-btn");
     const liveStatusBadge = byId("live-status-badge");
     const liveBufferCounter = byId("live-buffer-counter");
+    const liveCurrentWindow = byId("live-current-window");
+    const liveAnalysisWindow = byId("live-analysis-window");
+    const liveLastResultWindow = byId("live-last-result-window");
     const liveStreamState = byId("live-stream-state");
     const liveHint = byId("live-hint");
     const liveResultBody = byId("live-result-body");
@@ -100,6 +106,19 @@
         return Number.isFinite(number) ? (number * 100).toFixed(1) + "%" : "-";
     }
 
+    function formatClock(epochMilliseconds) {
+        return new Date(epochMilliseconds).toLocaleTimeString("vi-VN", {
+            hour12: false,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        });
+    }
+
+    function formatDelay(milliseconds) {
+        return (Math.max(0, milliseconds) / 1000).toFixed(2) + "s";
+    }
+
     function escapeHtml(value) {
         return String(value)
             .replace(/&/g, "&amp;")
@@ -122,6 +141,23 @@
     function buildResultCardHtml(data, subtitle) {
         const status = String(data.status || "Unknown");
         const hazard = status.toLowerCase() === "hazard";
+        const observation = data.observation && typeof data.observation === "object"
+            ? data.observation
+            : null;
+        const rawStatus = observation ? String(observation.raw_status || "Unknown") : "";
+        const rawHazard = rawStatus.toLowerCase() === "hazard";
+        const observationHtml = observation
+            ? '<div class="result-observation-grid">' +
+                '<div class="result-observation-item"><span>Raw model result</span><strong class="' +
+                    (rawHazard ? "raw-hazard" : "raw-safe") + '">' + escapeHtml(rawStatus.toUpperCase()) + '</strong></div>' +
+                '<div class="result-observation-item"><span>Alert decision</span><strong>' +
+                    escapeHtml(observation.alert_decision || "-") + '</strong></div>' +
+                '<div class="result-observation-item"><span>Captured interval</span><strong>' +
+                    escapeHtml(observation.captured_interval || "-") + '</strong></div>' +
+                '<div class="result-observation-item"><span>Delay after capture</span><strong>' +
+                    escapeHtml(observation.delay_after_capture || "-") + '</strong></div>' +
+              '</div>'
+            : "";
         const actions = Array.isArray(data.detected_actions)
             ? data.detected_actions.slice().sort((a, b) => Number(b.confidence) - Number(a.confidence))
             : [];
@@ -140,6 +176,7 @@
             '    <h3 class="status-title">' + escapeHtml(status.toUpperCase()) + "</h3>",
             '    <p class="status-copy">' + (hazard ? "A possible workplace hazard was detected." : "No hazard was confirmed in this window.") + "</p>",
             "  </div>",
+            observationHtml,
             '  <div class="confidence-block">',
             '    <div class="confidence-row"><span>Hazard confidence</span><strong>' + formatPercent(data.hazard_confidence) + "</strong></div>",
             '    <div class="meter"><div class="meter-fill ' + (hazard ? "hazard" : "safe") + '" style="width:' +
@@ -288,20 +325,24 @@
     function captureFrameBlob() {
         return new Promise((resolve) => {
             if (!liveVideo.videoWidth || !liveVideo.videoHeight) return resolve(null);
-            const targetHeight = 240;
-            const targetWidth = Math.max(1, Math.round((liveVideo.videoWidth / liveVideo.videoHeight) * targetHeight));
+            // Preserve detail without upscaling a lower-resolution camera source.
+            // VideoMAE performs its own final resize/crop to 224x224.
+            const scale = Math.min(1, LIVE_CAPTURE_MAX_HEIGHT / liveVideo.videoHeight);
+            const targetWidth = Math.max(1, Math.round(liveVideo.videoWidth * scale));
+            const targetHeight = Math.max(1, Math.round(liveVideo.videoHeight * scale));
             liveCanvas.width = targetWidth;
             liveCanvas.height = targetHeight;
             const context = liveCanvas.getContext("2d");
             if (!context) return resolve(null);
             context.drawImage(liveVideo, 0, 0, targetWidth, targetHeight);
-            liveCanvas.toBlob(resolve, "image/jpeg", 0.85);
+            liveCanvas.toBlob(resolve, "image/jpeg", LIVE_JPEG_QUALITY);
         });
     }
 
-    async function captureFiveSecondWindow(revision) {
+    async function captureFiveSecondWindow(revision, windowNumber) {
         const frames = [];
         const startedAt = performance.now();
+        const startedWallClock = Date.now();
         const interval = LIVE_WINDOW_MS / (LIVE_FRAME_COUNT - 1);
         for (let index = 0; index < LIVE_FRAME_COUNT; index += 1) {
             if (index > 0 && !await waitUntil(startedAt + interval * index, revision)) return null;
@@ -314,46 +355,93 @@
                 (elapsed / 1000).toFixed(1) + " / 5.0s";
             progressBar.style.width = Math.min(100, elapsed / LIVE_WINDOW_MS * 100) + "%";
         }
+        const completedAt = performance.now();
         return {
             frames,
-            durationMs: Math.round(performance.now() - startedAt),
-            number: ++live.windowNumber
+            durationMs: Math.round(completedAt - startedAt),
+            number: windowNumber,
+            startedWallClock,
+            completedWallClock: Date.now(),
+            completedAt
         };
     }
 
     async function analyzeLiveWindow(windowData, revision) {
         if (!live.active || revision !== live.revision) return;
         live.analyzing = true;
+        const requestStartedAt = performance.now();
         const body = new FormData();
         windowData.frames.forEach((frame, index) => body.append("frames", frame, "frame_" + index + ".jpg"));
         body.append("source_type", live.source);
         body.append("captured_duration_ms", String(windowData.durationMs));
         body.append("window_id", String(windowData.number));
-        liveStreamState.textContent = "Analyzing window #" + windowData.number;
+        liveAnalysisWindow.textContent = "#" + windowData.number + " - Uploading / GPU";
+        liveStreamState.textContent = "Model is processing window #" + windowData.number + ".";
+        const abortController = new AbortController();
+        const requestTimeout = setTimeout(
+            () => abortController.abort(),
+            LIVE_REQUEST_TIMEOUT_MS
+        );
 
         try {
-            const response = await fetch(LIVE_PREDICT_URL, { method: "POST", body });
+            const response = await fetch(LIVE_PREDICT_URL, {
+                method: "POST",
+                body,
+                signal: abortController.signal
+            });
             if (!live.active || revision !== live.revision) return;
             if (response.status === 429) {
+                liveAnalysisWindow.textContent = "#" + windowData.number + " - GPU busy";
                 setLiveHint("Model is busy. The newest completed window will be used next.", false);
                 return;
             }
             if (!response.ok) throw new Error(await extractErrorMessage(response));
             const data = await response.json();
+            const receivedAt = performance.now();
+            const delayAfterCapture = receivedAt - windowData.completedAt;
+            const requestDuration = receivedAt - requestStartedAt;
             const rawHazard = String(data.status).toLowerCase() === "hazard";
             live.consecutiveHazards = rawHazard ? live.consecutiveHazards + 1 : 0;
             const confirmedHazard = live.consecutiveHazards >= REQUIRED_CONSECUTIVE_HAZARDS;
             const displayData = Object.assign({}, data, { status: confirmedHazard ? "Hazard" : "Safe" });
-            let subtitle = "Five-second window #" + windowData.number;
-            if (rawHazard && !confirmedHazard) subtitle += " · potential hazard, verifying next window";
-            if (confirmedHazard) subtitle += " · confirmed across consecutive windows";
+            const alertDecision = confirmedHazard
+                ? "Confirmed hazard - 2 consecutive windows"
+                : (rawHazard ? "Potential hazard - waiting for next window" : "Safe");
+            const capturedInterval = formatClock(windowData.startedWallClock) + " - " +
+                formatClock(windowData.completedWallClock);
+            displayData.observation = {
+                raw_status: rawHazard ? "Hazard" : "Safe",
+                alert_decision: alertDecision,
+                captured_interval: capturedInterval,
+                delay_after_capture: formatDelay(delayAfterCapture) +
+                    " (request " + formatDelay(requestDuration) + ")"
+            };
+            const subtitle = "Window #" + windowData.number + " | captured " + capturedInterval +
+                " | returned +" + formatDelay(delayAfterCapture);
+            liveAnalysisWindow.textContent = "#" + windowData.number + " - Complete in " +
+                formatDelay(requestDuration);
+            liveLastResultWindow.textContent = "#" + windowData.number + " - Raw " +
+                (rawHazard ? "HAZARD" : "SAFE") + " - +" + formatDelay(delayAfterCapture);
             liveResultBody.innerHTML = buildResultCardHtml(displayData, subtitle);
             setLiveHint(rawHazard && !confirmedHazard
                 ? "A potential hazard was detected once; one more consecutive window is required for an alert."
                 : "", false);
         } catch (error) {
-            if (live.active && revision === live.revision) renderError(liveResultBody, "Live analysis failed", error.message);
+            if (live.active && revision === live.revision) {
+                const timedOut = error && error.name === "AbortError";
+                liveAnalysisWindow.textContent = "#" + windowData.number +
+                    (timedOut ? " - Timed out" : " - Failed");
+                renderError(
+                    liveResultBody,
+                    timedOut ? "Live analysis timed out" : "Live analysis failed",
+                    timedOut
+                        ? "Window #" + windowData.number +
+                            " exceeded 25 seconds. Continuing with the newest window."
+                        : error.message
+                );
+            }
         } finally {
+            clearTimeout(requestTimeout);
             live.analyzing = false;
             if (live.active && revision === live.revision && live.pendingWindow) {
                 const newest = live.pendingWindow;
@@ -366,7 +454,8 @@
     function queueLiveWindow(windowData, revision) {
         if (live.analyzing) {
             live.pendingWindow = windowData;
-            liveStreamState.textContent = "Recording continues · newest window queued";
+            liveStreamState.textContent = "Window #" + windowData.number +
+                " is queued; the model is still processing the previous window.";
             return;
         }
         void analyzeLiveWindow(windowData, revision);
@@ -374,11 +463,15 @@
 
     async function captureLoop(revision) {
         while (live.active && revision === live.revision) {
+            const windowNumber = live.windowNumber + 1;
+            live.windowNumber = windowNumber;
             setLiveBadge("streaming", "Recording");
-            liveStreamState.textContent = "Recording a complete five-second window";
+            liveCurrentWindow.textContent = "#" + windowNumber + " - Recording";
+            liveStreamState.textContent = "Recording window #" + windowNumber + " for five seconds.";
             progressBar.style.width = "0%";
-            const windowData = await captureFiveSecondWindow(revision);
+            const windowData = await captureFiveSecondWindow(revision, windowNumber);
             if (!windowData || !live.active || revision !== live.revision) break;
+            liveCurrentWindow.textContent = "#" + windowNumber + " - Complete";
             progressBar.style.width = "100%";
             queueLiveWindow(windowData, revision);
         }
@@ -399,6 +492,9 @@
         liveStopBtn.disabled = false;
         setLiveBadge("warming", "Warming up");
         liveStreamState.textContent = "Stabilizing exposure and focus";
+        liveCurrentWindow.textContent = "Waiting for warm-up";
+        liveAnalysisWindow.textContent = "No window";
+        liveLastResultWindow.textContent = "No result";
         liveBufferCounter.textContent = "Warm-up 2.5s";
         const ready = await waitUntil(performance.now() + CAMERA_WARMUP_MS, revision);
         if (!ready) return;
@@ -581,6 +677,9 @@
         live.analyzing = false;
         progressBar.style.width = "0%";
         liveBufferCounter.textContent = "0 / 16 frames";
+        liveCurrentWindow.textContent = "No active window";
+        liveAnalysisWindow.textContent = "No window";
+        liveLastResultWindow.textContent = "No result";
     }
 
     async function stopLiveSource() {

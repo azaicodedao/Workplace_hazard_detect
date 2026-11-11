@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Industrial Safety System</title>
-    <link rel="stylesheet" href="css/style.css?v=20261031-1">
+    <link rel="stylesheet" href="css/style.css?v=20261111-2">
 </head>
 <body>
     <div class="app-shell">
@@ -225,14 +225,23 @@
 
                     <div class="live-stream-bar">
                         <div class="stream-stat">
-                            <span class="stat-label">5-second window</span>
+                            <span class="stat-label">Recording now</span>
+                            <strong id="live-current-window">No active window</strong>
+                        </div>
+                        <div class="stream-stat">
+                            <span class="stat-label">Capture progress</span>
                             <strong id="live-buffer-counter">0 / 16 frames</strong>
                         </div>
                         <div class="stream-stat">
-                            <span class="stat-label">Inference Status</span>
-                            <span id="live-stream-state">Idle</span>
+                            <span class="stat-label">Model processing</span>
+                            <span id="live-analysis-window">No window</span>
+                        </div>
+                        <div class="stream-stat">
+                            <span class="stat-label">Last result</span>
+                            <span id="live-last-result-window">No result</span>
                         </div>
                     </div>
+                    <p id="live-stream-state" class="live-pipeline-state">Idle</p>
                     <div class="capture-progress" aria-hidden="true">
                         <span id="capture-progress-bar"></span>
                     </div>
@@ -268,6 +277,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=20261031-1"></script>
+    <script src="js/app.js?v=20261111-4"></script>
 </body>
 </html>
