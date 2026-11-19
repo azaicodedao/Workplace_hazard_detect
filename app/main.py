@@ -8,6 +8,7 @@ import os
 
 from app.api.routes import router as api_router
 from app.api.camera_sessions import router as camera_sessions_router
+from app.api.pose_proxy import router as pose_proxy_router
 from app.services.mdns_service import mdns_service
 
 
@@ -45,6 +46,7 @@ async def disable_static_asset_cache(request, call_next):
 # Nhúng API Router từ routes.py
 app.include_router(api_router)
 app.include_router(camera_sessions_router)
+app.include_router(pose_proxy_router)
 
 # Phục vụ các file tĩnh cho Frontend (HTML, CSS, JS)
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
@@ -54,7 +56,7 @@ if os.path.exists(frontend_dir):
     # Khi người dùng truy cập trang chủ "/", tự động điều hướng tới giao diện web
     @app.get("/")
     def read_root():
-        return RedirectResponse(url="/static/index.html?v=20261111-4")
+        return RedirectResponse(url="/static/index.html?v=20261119-2")
 else:
     @app.get("/")
     def read_root():

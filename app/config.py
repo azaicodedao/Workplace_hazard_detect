@@ -32,6 +32,16 @@ REMOTE_INFERENCE_TIMEOUT_SECONDS = float(
 REMOTE_LIVE_TIMEOUT_SECONDS = float(
     os.getenv("REMOTE_LIVE_TIMEOUT_SECONDS", "20")
 )
+POSE_TRACKING_ENABLED = os.getenv("POSE_TRACKING_ENABLED", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+POSE_SERVICE_WS_URL = os.getenv(
+    "POSE_SERVICE_WS_URL", "ws://127.0.0.1:8001/ws/pose"
+).strip()
+POSE_SERVICE_HTTP_URL = os.getenv(
+    "POSE_SERVICE_HTTP_URL", "http://127.0.0.1:8001"
+).strip().rstrip("/")
+POSE_VIDEO_TIMEOUT_SECONDS = float(os.getenv("POSE_VIDEO_TIMEOUT_SECONDS", "600"))
 
 
 def get_ice_servers():

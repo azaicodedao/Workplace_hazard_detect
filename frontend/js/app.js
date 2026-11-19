@@ -2,16 +2,28 @@
     "use strict";
 
     const PREDICT_URL = "/predict/";
+    const PREDICT_TIMELINE_URL = "/predict/timeline/";
+    const PREDICT_TIMELINE_STREAM_URL = "/predict/timeline/stream";
     const LIVE_PREDICT_URL = "/predict/live/";
     const CAMERA_SESSIONS_URL = "/api/camera-sessions";
     const ALLOWED_EXTENSIONS = [".mp4", ".avi", ".mov"];
+    const UPLOAD_WINDOW_SECONDS = 5;
+    const UPLOAD_STRIDE_SECONDS = 4;
     const LIVE_FRAME_COUNT = 16;
     const LIVE_WINDOW_MS = 5000;
-    const LIVE_CAPTURE_MAX_HEIGHT = 480;
+    const LIVE_STRIDE_MS = 4000;
+    const LIVE_SAMPLE_INTERVAL_MS = LIVE_WINDOW_MS / (LIVE_FRAME_COUNT - 1);
+    const LIVE_CAPTURE_MAX_HEIGHT = 360;
     const LIVE_JPEG_QUALITY = 0.92;
     const LIVE_REQUEST_TIMEOUT_MS = 25000;
     const CAMERA_WARMUP_MS = 2500;
-    const REQUIRED_CONSECUTIVE_HAZARDS = 2;
+    const POSE_FRAME_INTERVAL_MS = 100;
+    const POSE_CAPTURE_MAX_WIDTH = 640;
+    const POSE_JPEG_QUALITY = 0.82;
+    const POSE_SKELETON = [
+        [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],
+        [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16]
+    ];
 
     const byId = (id) => document.getElementById(id);
     const sourceButtons = {
@@ -39,6 +51,10 @@
 
     const liveVideo = byId("live-video");
     const liveCanvas = byId("live-canvas");
+    const poseCaptureCanvas = byId("pose-capture-canvas");
+    const poseOverlay = byId("pose-overlay");
+    const poseTrackingState = byId("pose-tracking-state");
+    const poseAlert = byId("pose-alert");
     const livePlaceholder = byId("live-placeholder");
     const livePlaceholderTitle = byId("live-placeholder-title");
     const livePlaceholderSub = byId("live-placeholder-sub");
@@ -81,9 +97,12 @@
         active: false,
         waiters: new Set(),
         analyzing: false,
-        pendingWindow: null,
+        frameBuffer: [],
+        nextWindowDueAt: null,
         windowNumber: 0,
-        consecutiveHazards: 0,
+        poseSocket: null,
+        poseTimer: null,
+        poseAwaitingResult: false,
         phoneSession: null,
         signalingSocket: null,
         peerConnection: null,
@@ -117,6 +136,30 @@
 
     function formatDelay(milliseconds) {
         return (Math.max(0, milliseconds) / 1000).toFixed(2) + "s";
+    }
+
+    function formatVideoTime(seconds) {
+        const safeSeconds = Math.max(0, Number(seconds) || 0);
+        const totalTenths = Math.round(safeSeconds * 10);
+        const wholeSeconds = Math.floor(totalTenths / 10);
+        const hours = Math.floor(wholeSeconds / 3600);
+        const minutes = Math.floor((wholeSeconds % 3600) / 60);
+        const remaining = wholeSeconds % 60;
+        const fraction = totalTenths % 10;
+        const base = (hours ? String(hours).padStart(2, "0") + ":" : "") +
+            String(minutes).padStart(2, "0") + ":" + String(remaining).padStart(2, "0");
+        return fraction ? base + "." + fraction : base;
+    }
+
+    function estimateCoarseWindowCount(durationSeconds) {
+        const duration = Number(durationSeconds);
+        if (!Number.isFinite(duration) || duration <= 0) return null;
+        if (duration <= UPLOAD_WINDOW_SECONDS) return 1;
+        const lastStart = duration - UPLOAD_WINDOW_SECONDS;
+        const regularCount = Math.floor(lastStart / UPLOAD_STRIDE_SECONDS) + 1;
+        const strideRatio = lastStart / UPLOAD_STRIDE_SECONDS;
+        const endsExactlyOnStride = Math.abs(strideRatio - Math.round(strideRatio)) < 0.001;
+        return regularCount + (endsExactlyOnStride ? 0 : 1);
     }
 
     function escapeHtml(value) {
@@ -187,6 +230,139 @@
         ].join("");
     }
 
+    function buildTimelineHtml(data) {
+        const status = String(data.status || "Unknown");
+        const hazard = status.toLowerCase() === "hazard";
+        const events = Array.isArray(data.events) ? data.events : [];
+        const windows = Array.isArray(data.windows) ? data.windows : [];
+        const poseAnalysis = data.pose_analysis && typeof data.pose_analysis === "object"
+            ? data.pose_analysis
+            : { available: false, events: [] };
+        const poseEvents = Array.isArray(poseAnalysis.events) ? poseAnalysis.events : [];
+        const scan = data.scan || {};
+        const eventHtml = events.length
+            ? events.map((event) => {
+                const actions = Array.isArray(event.detected_actions) ? event.detected_actions : [];
+                const actionText = actions.length
+                    ? actions.slice(0, 4).map((item) => escapeHtml(item.action)).join(", ")
+                    : "No action label";
+                return '<button type="button" class="timeline-event" data-seek="' +
+                    Number(event.peak_time || 0) + '">' +
+                    '<span class="timeline-event-number">Event #' + Number(event.event_id) + '</span>' +
+                    '<strong>' + formatVideoTime(event.start_time) + " – " + formatVideoTime(event.end_time) + '</strong>' +
+                    '<span>Peak ' + formatVideoTime(event.peak_time) + " · " +
+                        formatPercent(event.hazard_confidence) + '</span>' +
+                    '<small>' + actionText + '</small>' +
+                    '<em>Play this section</em>' +
+                    '</button>';
+            }).join("")
+            : '<p class="no-actions">No hazardous interval was detected.</p>';
+        const poseEventHtml = poseEvents.length
+            ? poseEvents.map((event) => (
+                '<button type="button" class="timeline-event pose-fall-event" data-seek="' +
+                Number(event.peak_time || event.start_time || 0) + '">' +
+                '<span class="timeline-event-number">Fall #' + Number(event.event_id) +
+                    ' · Person #' + Number(event.track_id) + '</span>' +
+                '<strong>' + formatVideoTime(event.start_time) + " – " +
+                    formatVideoTime(event.end_time) + '</strong>' +
+                '<span>Peak ' + formatVideoTime(event.peak_time) + " · " +
+                    formatPercent(event.confidence) + '</span>' +
+                '<small>Pose state: ' + escapeHtml(event.final_state || "FALLING") + '</small>' +
+                '<em>Play fall moment</em>' +
+                '</button>'
+            )).join("")
+            : poseAnalysis.available
+                ? '<p class="no-actions">YOLO Pose did not detect a fall in this video.</p>'
+                : '<p class="no-actions">Pose analysis was unavailable' +
+                    (poseAnalysis.error ? ': ' + escapeHtml(poseAnalysis.error) : '.') + '</p>';
+        const poseMeta = poseAnalysis.available
+            ? Number(poseAnalysis.processed_frames || 0) + ' sampled frames · ' +
+                Number(poseAnalysis.effective_fps || 0).toFixed(1) + ' FPS'
+            : 'Pose service unavailable';
+        const windowRows = windows.map((window) => {
+            const windowHazard = String(window.status).toLowerCase() === "hazard";
+            return '<tr class="' + (windowHazard ? "window-hazard" : "") + '">' +
+                '<td>' + escapeHtml(window.phase) + '</td>' +
+                '<td>' + formatVideoTime(window.start_time) + " – " + formatVideoTime(window.end_time) + '</td>' +
+                '<td>' + escapeHtml(window.status) + '</td>' +
+                '<td>' + formatPercent(window.hazard_confidence) + '</td>' +
+                '</tr>';
+        }).join("");
+
+        return [
+            '<article class="result-card timeline-result">',
+            '  <div class="result-banner ' + (hazard ? "hazard" : "safe") + '">',
+            '    <p class="status-kicker">Temporal video analysis</p>',
+            '    <h3 class="status-title">' + escapeHtml(status.toUpperCase()) + '</h3>',
+            '    <p class="status-copy">Video duration ' + formatVideoTime(data.video_duration) +
+                ' · ' + Number(scan.total_inferences || 0) + ' GPU inferences</p>',
+            '  </div>',
+            '  <div class="confidence-block">',
+            '    <div class="confidence-row"><span>Highest hazard confidence</span><strong>' +
+                formatPercent(data.hazard_confidence) + '</strong></div>',
+            '    <div class="meter"><div class="meter-fill ' + (hazard ? "hazard" : "safe") +
+                '" style="width:' + Math.max(0, Math.min(100, Number(data.hazard_confidence || 0) * 100)) + '%"></div></div>',
+            '  </div>',
+            '  <div class="timeline-block pose-timeline-block"><h3>Fall detection (YOLO Pose)</h3>',
+            '    <p class="timeline-section-meta">' + escapeHtml(poseMeta) + '</p>',
+            '    <div class="timeline-events">' + poseEventHtml + '</div>',
+            '  </div>',
+            '  <div class="timeline-block"><h3>VideoMAE hazard time ranges</h3><div class="timeline-events">' +
+                eventHtml + '</div></div>',
+            '  <details class="timeline-windows"><summary>View ' + windows.length +
+                ' analyzed windows</summary><div class="timeline-table-wrap"><table><thead><tr>' +
+                '<th>Phase</th><th>Time</th><th>Result</th><th>Confidence</th>' +
+                '</tr></thead><tbody>' + windowRows + '</tbody></table></div></details>',
+            '</article>'
+        ].join("");
+    }
+
+    function buildTimelineProgressHtml(state) {
+        const windows = state.windows || [];
+        const hazardCount = windows.filter((item) => String(item.status).toLowerCase() === "hazard").length;
+        const windowHtml = windows.length
+            ? windows.map((window, index) => {
+                const hazard = String(window.status).toLowerCase() === "hazard";
+                const actions = Array.isArray(window.detected_actions) ? window.detected_actions : [];
+                const actionText = actions.length ? escapeHtml(actions[0].action) : "No action label";
+                const midpoint = (Number(window.start_time) + Number(window.end_time)) / 2;
+                return '<button type="button" class="timeline-event ' + (hazard ? "" : "timeline-event-safe") +
+                    '" data-seek="' + midpoint + '">' +
+                    '<span class="timeline-event-number">Window #' + (index + 1) + '</span>' +
+                    '<strong>' + formatVideoTime(window.start_time) + " – " + formatVideoTime(window.end_time) + '</strong>' +
+                    '<span>' + escapeHtml(String(window.status).toUpperCase()) + " · " +
+                        formatPercent(window.hazard_confidence) + '</span>' +
+                    '<small>' + actionText + '</small>' +
+                    '<em>Play window</em></button>';
+            }).join("")
+            : '<p class="no-actions">Waiting for the first GPU result...</p>';
+        const stageName = "Coarse scan";
+        return [
+            '<article class="result-card timeline-result">',
+            '  <div class="result-banner ' + (hazardCount ? "hazard" : "safe") + '">',
+            '    <p class="status-kicker">Streaming timeline analysis</p>',
+            '    <h3 class="status-title">ANALYZING</h3>',
+            '    <p class="status-copy">' + stageName + ': ' + Number(state.completed || 0) +
+                ' / ' + Number(state.total || 0) + ' · ' + hazardCount + ' hazard window(s)</p>',
+            '  </div>',
+            '  <div class="timeline-block"><h3>Results received so far</h3>',
+            '    <div class="timeline-events">' + windowHtml + '</div>',
+            '  </div>',
+            '</article>'
+        ].join("");
+    }
+
+    function bindTimelineSeekButtons() {
+        resultBody.querySelectorAll("[data-seek]").forEach((button) => {
+            button.addEventListener("click", () => {
+                const peakTime = Number(button.dataset.seek || 0);
+                videoPreview.currentTime = Math.max(0, peakTime - UPLOAD_WINDOW_SECONDS / 2);
+                videoPreview.play().catch(() => {});
+                videoPreview.scrollIntoView({ behavior: "smooth", block: "center" });
+            });
+        });
+    }
+
     function renderError(container, title, message) {
         container.innerHTML = '<div class="error-card" role="alert"><h3>' +
             escapeHtml(title) + "</h3><p>" + escapeHtml(message) + "</p></div>";
@@ -198,7 +374,7 @@
     }
 
     // ------------------------------------------------------------------
-    // Upload mode: the file and /predict/ contract remain unchanged.
+    // Upload mode: one streaming result per overlapping coarse window.
     // ------------------------------------------------------------------
     function revokePreview() {
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -248,15 +424,79 @@
         browseBtn.disabled = true;
         clearBtn.disabled = true;
         analyzeLabel.textContent = "Analyzing...";
-        renderLoading(resultBody, "Running video analysis");
+        renderLoading(resultBody, "Scanning video timeline");
+        const videoDuration = Number(videoPreview.duration);
+        const coarseWindowCount = estimateCoarseWindowCount(videoDuration);
+        formHint.textContent = coarseWindowCount
+            ? "Video " + formatVideoTime(videoDuration) + ": scanning " + coarseWindowCount +
+                " overlapping window" + (coarseWindowCount === 1 ? "" : "s") + "."
+            : "Scanning five-second windows with one-second overlap.";
         const body = new FormData();
         body.append("file", selectedFile);
         try {
-            const response = await fetch(PREDICT_URL, { method: "POST", body });
+            const response = await fetch(PREDICT_TIMELINE_STREAM_URL, { method: "POST", body });
             if (!response.ok) throw new Error(await extractErrorMessage(response));
-            resultBody.innerHTML = buildResultCardHtml(await response.json(), "Video analysis result");
+            if (!response.body) throw new Error("This browser does not support streamed responses.");
+
+            const state = {
+                windows: [],
+                stage: "coarse",
+                completed: 0,
+                total: coarseWindowCount || 0
+            };
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let completedResult = null;
+
+            async function handleStreamEvent(event) {
+                if (event.type === "started") {
+                    state.total = Number(event.coarse_windows || 0);
+                    state.completed = 0;
+                    resultBody.innerHTML = buildTimelineProgressHtml(state);
+                } else if (event.type === "window") {
+                    state.stage = String(event.stage || state.stage);
+                    state.completed = Number(event.completed || 0);
+                    state.total = Number(event.total || 0);
+                    state.windows.push(event.window);
+                    resultBody.innerHTML = buildTimelineProgressHtml(state);
+                    bindTimelineSeekButtons();
+                    formHint.textContent = "Received " + event.stage + " window " +
+                        state.completed + "/" + state.total + ": " +
+                        formatVideoTime(event.window.start_time) + "–" +
+                        formatVideoTime(event.window.end_time) + ".";
+                } else if (event.type === "pose_complete") {
+                    const pose = event.pose_analysis || {};
+                    const falls = Array.isArray(pose.events) ? pose.events.length : 0;
+                    formHint.textContent = pose.available
+                        ? "Pose analysis complete: " + falls + " fall event" + (falls === 1 ? "" : "s") + "."
+                        : "VideoMAE complete; pose analysis was unavailable.";
+                } else if (event.type === "complete") {
+                    completedResult = event.result;
+                } else if (event.type === "error") {
+                    throw new Error(event.detail || "Timeline analysis failed.");
+                }
+            }
+
+            while (true) {
+                const chunk = await reader.read();
+                buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+                for (const line of lines) {
+                    if (line.trim()) await handleStreamEvent(JSON.parse(line));
+                }
+                if (chunk.done) break;
+            }
+            if (buffer.trim()) await handleStreamEvent(JSON.parse(buffer));
+            if (!completedResult) throw new Error("The analysis stream ended before completion.");
+
+            resultBody.innerHTML = buildTimelineHtml(completedResult);
+            bindTimelineSeekButtons();
+            formHint.textContent = "Analysis complete. Click an event to play the detected section.";
         } catch (error) {
             renderError(resultBody, "Video analysis failed", error.message);
+            formHint.textContent = "";
         } finally {
             isProcessing = false;
             analyzeBtn.disabled = !selectedFile;
@@ -339,30 +579,222 @@
         });
     }
 
-    async function captureFiveSecondWindow(revision, windowNumber) {
-        const frames = [];
-        const startedAt = performance.now();
-        const startedWallClock = Date.now();
-        const interval = LIVE_WINDOW_MS / (LIVE_FRAME_COUNT - 1);
-        for (let index = 0; index < LIVE_FRAME_COUNT; index += 1) {
-            if (index > 0 && !await waitUntil(startedAt + interval * index, revision)) return null;
-            if (!live.active || live.revision !== revision) return null;
-            const frame = await captureFrameBlob();
-            if (!frame) return null;
-            frames.push(frame);
-            const elapsed = Math.min(LIVE_WINDOW_MS, performance.now() - startedAt);
-            liveBufferCounter.textContent = frames.length + " / " + LIVE_FRAME_COUNT + " frames · " +
-                (elapsed / 1000).toFixed(1) + " / 5.0s";
-            progressBar.style.width = Math.min(100, elapsed / LIVE_WINDOW_MS * 100) + "%";
+    function clearPoseOverlay() {
+        const context = poseOverlay.getContext("2d");
+        if (!context) return;
+        poseOverlay.width = Math.max(1, poseOverlay.clientWidth || 1);
+        poseOverlay.height = Math.max(1, poseOverlay.clientHeight || 1);
+        context.clearRect(0, 0, poseOverlay.width, poseOverlay.height);
+    }
+
+    function drawPoseResults(payload) {
+        const sourceWidth = Number(payload.frame_width || 0);
+        const sourceHeight = Number(payload.frame_height || 0);
+        const displayWidth = Math.max(1, poseOverlay.clientWidth);
+        const displayHeight = Math.max(1, poseOverlay.clientHeight);
+        poseOverlay.width = displayWidth;
+        poseOverlay.height = displayHeight;
+        const context = poseOverlay.getContext("2d");
+        if (!context || !sourceWidth || !sourceHeight) return;
+        context.clearRect(0, 0, displayWidth, displayHeight);
+
+        // Match the preview's object-fit: cover geometry.
+        const scale = Math.max(displayWidth / sourceWidth, displayHeight / sourceHeight);
+        const offsetX = (displayWidth - sourceWidth * scale) / 2;
+        const offsetY = (displayHeight - sourceHeight * scale) / 2;
+        const mapPoint = (point) => [offsetX + point[0] * scale, offsetY + point[1] * scale];
+        const people = Array.isArray(payload.people) ? payload.people : [];
+
+        people.forEach((person) => {
+            const state = String(person.state || "STANDING");
+            const color = state === "FALLEN" ? "#ff4d4d" : (state === "FALLING" ? "#f0b429" : "#2fbf71");
+            const box = Array.isArray(person.box) ? person.box : [];
+            const keypoints = Array.isArray(person.keypoints) ? person.keypoints : [];
+            if (box.length === 4) {
+                const topLeft = mapPoint([box[0], box[1]]);
+                const bottomRight = mapPoint([box[2], box[3]]);
+                context.strokeStyle = color;
+                context.lineWidth = 2;
+                context.strokeRect(
+                    topLeft[0], topLeft[1],
+                    bottomRight[0] - topLeft[0], bottomRight[1] - topLeft[1]
+                );
+                const label = "ID " + person.track_id + " · " + state + " · " +
+                    Math.round(Number(person.fall_score || 0) * 100) + "%";
+                context.font = "12px sans-serif";
+                const labelWidth = context.measureText(label).width + 10;
+                const labelY = Math.max(16, topLeft[1]);
+                context.fillStyle = color;
+                context.fillRect(topLeft[0], labelY - 16, labelWidth, 17);
+                context.fillStyle = "#081018";
+                context.fillText(label, topLeft[0] + 5, labelY - 4);
+            }
+
+            context.strokeStyle = color;
+            context.fillStyle = color;
+            context.lineWidth = 2;
+            POSE_SKELETON.forEach(([from, to]) => {
+                const first = keypoints[from];
+                const second = keypoints[to];
+                if (!first || !second || Number(first[2]) < 0.25 || Number(second[2]) < 0.25) return;
+                const p1 = mapPoint(first);
+                const p2 = mapPoint(second);
+                context.beginPath();
+                context.moveTo(p1[0], p1[1]);
+                context.lineTo(p2[0], p2[1]);
+                context.stroke();
+            });
+            keypoints.forEach((point) => {
+                if (Number(point[2]) < 0.25) return;
+                const mapped = mapPoint(point);
+                context.beginPath();
+                context.arc(mapped[0], mapped[1], 2.5, 0, Math.PI * 2);
+                context.fill();
+            });
+        });
+
+        const falling = people.filter((person) => ["FALLING", "FALLEN"].includes(String(person.state)));
+        if (falling.length) {
+            const fallen = falling.some((person) => String(person.state) === "FALLEN");
+            poseAlert.hidden = false;
+            poseAlert.classList.toggle("pose-alert-fallen", fallen);
+            poseAlert.textContent = (fallen ? "Fallen posture detected" : "Possible fall") + ": " +
+                falling.map((person) => "Person #" + person.track_id).join(", ");
+        } else {
+            poseAlert.hidden = true;
+            poseAlert.classList.remove("pose-alert-fallen");
+            poseAlert.textContent = "";
         }
-        const completedAt = performance.now();
+        poseTrackingState.textContent = people.length + " person(s) tracked · " +
+            String(payload.device || "unknown device");
+    }
+
+    async function sendPoseFrame(revision) {
+        const socket = live.poseSocket;
+        if (
+            !live.active || live.revision !== revision || live.poseAwaitingResult ||
+            !socket || socket.readyState !== WebSocket.OPEN ||
+            !liveVideo.videoWidth || !liveVideo.videoHeight
+        ) return;
+
+        const scale = Math.min(1, POSE_CAPTURE_MAX_WIDTH / liveVideo.videoWidth);
+        const width = Math.max(1, Math.round(liveVideo.videoWidth * scale));
+        const height = Math.max(1, Math.round(liveVideo.videoHeight * scale));
+        poseCaptureCanvas.width = width;
+        poseCaptureCanvas.height = height;
+        const context = poseCaptureCanvas.getContext("2d");
+        if (!context) return;
+        context.drawImage(liveVideo, 0, 0, width, height);
+        live.poseAwaitingResult = true;
+        const blob = await new Promise((resolve) => {
+            poseCaptureCanvas.toBlob(resolve, "image/jpeg", POSE_JPEG_QUALITY);
+        });
+        if (
+            !blob || !live.active || live.revision !== revision ||
+            live.poseSocket !== socket || socket.readyState !== WebSocket.OPEN
+        ) {
+            live.poseAwaitingResult = false;
+            return;
+        }
+        socket.send(await blob.arrayBuffer());
+    }
+
+    function stopPoseTracking() {
+        if (live.poseTimer) clearInterval(live.poseTimer);
+        live.poseTimer = null;
+        const socket = live.poseSocket;
+        live.poseSocket = null;
+        live.poseAwaitingResult = false;
+        if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+        clearPoseOverlay();
+        poseTrackingState.textContent = "Pose tracking inactive";
+        poseAlert.hidden = true;
+        poseAlert.classList.remove("pose-alert-fallen");
+        poseAlert.textContent = "";
+    }
+
+    function startPoseTracking(revision) {
+        stopPoseTracking();
+        poseTrackingState.textContent = "Connecting to YOLO Pose service...";
+        const socket = new WebSocket(websocketUrl("/ws/pose"));
+        live.poseSocket = socket;
+        socket.onopen = () => {
+            if (live.poseSocket !== socket || live.revision !== revision) return;
+            poseTrackingState.textContent = "YOLO Pose connected; loading tracker...";
+        };
+        socket.onmessage = (event) => {
+            if (live.poseSocket !== socket || live.revision !== revision) return;
+            try {
+                const payload = JSON.parse(event.data);
+                if (payload.type === "pose_ready") {
+                    live.poseAwaitingResult = false;
+                    poseTrackingState.textContent = "YOLO Pose ready · " + payload.model + " · " + payload.device;
+                    if (!live.poseTimer) {
+                        live.poseTimer = setInterval(
+                            () => void sendPoseFrame(revision),
+                            POSE_FRAME_INTERVAL_MS
+                        );
+                    }
+                } else if (payload.type === "pose_result") {
+                    live.poseAwaitingResult = false;
+                    drawPoseResults(payload);
+                } else if (payload.type === "pose_error") {
+                    live.poseAwaitingResult = false;
+                    poseTrackingState.textContent = payload.detail || "YOLO Pose error";
+                }
+            } catch (error) {
+                live.poseAwaitingResult = false;
+                poseTrackingState.textContent = "Invalid YOLO Pose response: " + error.message;
+            }
+        };
+        socket.onerror = () => {
+            if (live.poseSocket === socket) poseTrackingState.textContent = "YOLO Pose connection failed";
+        };
+        socket.onclose = () => {
+            if (live.poseSocket !== socket) return;
+            live.poseSocket = null;
+            live.poseAwaitingResult = false;
+            if (live.poseTimer) clearInterval(live.poseTimer);
+            live.poseTimer = null;
+            if (live.active && live.revision === revision) {
+                poseTrackingState.textContent = "YOLO Pose disconnected. Start pose_service/run.py on port 8001.";
+            }
+        };
+    }
+
+    function buildLatestRollingWindow(windowNumber) {
+        if (live.frameBuffer.length < LIVE_FRAME_COUNT) return null;
+        const newest = live.frameBuffer[live.frameBuffer.length - 1];
+        const windowStart = newest.capturedAt - LIVE_WINDOW_MS;
+        if (live.frameBuffer[0].capturedAt > windowStart + LIVE_SAMPLE_INTERVAL_MS) return null;
+
+        const selected = [];
+        let minimumIndex = 0;
+        for (let sampleIndex = 0; sampleIndex < LIVE_FRAME_COUNT; sampleIndex += 1) {
+            const targetTime = windowStart + sampleIndex * LIVE_SAMPLE_INTERVAL_MS;
+            let bestIndex = minimumIndex;
+            let bestDistance = Number.POSITIVE_INFINITY;
+            const lastAllowedIndex = live.frameBuffer.length - (LIVE_FRAME_COUNT - sampleIndex);
+            for (let index = minimumIndex; index <= lastAllowedIndex; index += 1) {
+                const distance = Math.abs(live.frameBuffer[index].capturedAt - targetTime);
+                if (distance <= bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = index;
+                } else {
+                    break;
+                }
+            }
+            selected.push(live.frameBuffer[bestIndex]);
+            minimumIndex = bestIndex + 1;
+        }
+
         return {
-            frames,
-            durationMs: Math.round(completedAt - startedAt),
+            frames: selected.map((entry) => entry.blob),
+            durationMs: LIVE_WINDOW_MS,
             number: windowNumber,
-            startedWallClock,
-            completedWallClock: Date.now(),
-            completedAt
+            startedWallClock: newest.wallClock - LIVE_WINDOW_MS,
+            completedWallClock: newest.wallClock,
+            completedAt: newest.capturedAt
         };
     }
 
@@ -392,7 +824,8 @@
             if (!live.active || revision !== live.revision) return;
             if (response.status === 429) {
                 liveAnalysisWindow.textContent = "#" + windowData.number + " - GPU busy";
-                setLiveHint("Model is busy. The newest completed window will be used next.", false);
+                live.nextWindowDueAt = performance.now() + 1000;
+                setLiveHint("GPU is busy. No stale window was queued; the latest buffer will retry.", false);
                 return;
             }
             if (!response.ok) throw new Error(await extractErrorMessage(response));
@@ -401,12 +834,10 @@
             const delayAfterCapture = receivedAt - windowData.completedAt;
             const requestDuration = receivedAt - requestStartedAt;
             const rawHazard = String(data.status).toLowerCase() === "hazard";
-            live.consecutiveHazards = rawHazard ? live.consecutiveHazards + 1 : 0;
-            const confirmedHazard = live.consecutiveHazards >= REQUIRED_CONSECUTIVE_HAZARDS;
-            const displayData = Object.assign({}, data, { status: confirmedHazard ? "Hazard" : "Safe" });
-            const alertDecision = confirmedHazard
-                ? "Confirmed hazard - 2 consecutive windows"
-                : (rawHazard ? "Potential hazard - waiting for next window" : "Safe");
+            const displayData = Object.assign({}, data);
+            const alertDecision = rawHazard
+                ? "Hazard detected in this window"
+                : "Safe in this window";
             const capturedInterval = formatClock(windowData.startedWallClock) + " - " +
                 formatClock(windowData.completedWallClock);
             displayData.observation = {
@@ -423,8 +854,8 @@
             liveLastResultWindow.textContent = "#" + windowData.number + " - Raw " +
                 (rawHazard ? "HAZARD" : "SAFE") + " - +" + formatDelay(delayAfterCapture);
             liveResultBody.innerHTML = buildResultCardHtml(displayData, subtitle);
-            setLiveHint(rawHazard && !confirmedHazard
-                ? "A potential hazard was detected once; one more consecutive window is required for an alert."
+            setLiveHint(rawHazard
+                ? "A hazard was detected in this window."
                 : "", false);
         } catch (error) {
             if (live.active && revision === live.revision) {
@@ -442,38 +873,66 @@
             }
         } finally {
             clearTimeout(requestTimeout);
-            live.analyzing = false;
-            if (live.active && revision === live.revision && live.pendingWindow) {
-                const newest = live.pendingWindow;
-                live.pendingWindow = null;
-                void analyzeLiveWindow(newest, revision);
-            }
+            if (live.revision === revision) live.analyzing = false;
         }
     }
 
-    function queueLiveWindow(windowData, revision) {
-        if (live.analyzing) {
-            live.pendingWindow = windowData;
-            liveStreamState.textContent = "Window #" + windowData.number +
-                " is queued; the model is still processing the previous window.";
-            return;
-        }
-        void analyzeLiveWindow(windowData, revision);
-    }
-
-    async function captureLoop(revision) {
+    async function rollingCaptureLoop(revision) {
+        const captureStartedAt = performance.now();
+        let captureIndex = 0;
         while (live.active && revision === live.revision) {
-            const windowNumber = live.windowNumber + 1;
-            live.windowNumber = windowNumber;
-            setLiveBadge("streaming", "Recording");
-            liveCurrentWindow.textContent = "#" + windowNumber + " - Recording";
-            liveStreamState.textContent = "Recording window #" + windowNumber + " for five seconds.";
-            progressBar.style.width = "0%";
-            const windowData = await captureFiveSecondWindow(revision, windowNumber);
-            if (!windowData || !live.active || revision !== live.revision) break;
-            liveCurrentWindow.textContent = "#" + windowNumber + " - Complete";
-            progressBar.style.width = "100%";
-            queueLiveWindow(windowData, revision);
+            if (captureIndex > 0 && !await waitUntil(
+                captureStartedAt + captureIndex * LIVE_SAMPLE_INTERVAL_MS,
+                revision
+            )) break;
+            if (!live.active || revision !== live.revision) break;
+
+            const blob = await captureFrameBlob();
+            if (!blob) break;
+            const capturedAt = performance.now();
+            const wallClock = Date.now();
+            live.frameBuffer.push({ blob, capturedAt, wallClock });
+            const retentionStart = capturedAt - LIVE_WINDOW_MS - LIVE_SAMPLE_INTERVAL_MS * 3;
+            while (live.frameBuffer.length && live.frameBuffer[0].capturedAt < retentionStart) {
+                live.frameBuffer.shift();
+            }
+
+            const coverageMs = live.frameBuffer.length > 1
+                ? capturedAt - live.frameBuffer[0].capturedAt
+                : 0;
+            const readyPercent = Math.min(100, coverageMs / LIVE_WINDOW_MS * 100);
+            liveBufferCounter.textContent = live.frameBuffer.length + " buffered frames · " +
+                (Math.min(LIVE_WINDOW_MS, coverageMs) / 1000).toFixed(1) + " / 5.0s";
+            progressBar.style.width = readyPercent + "%";
+            liveCurrentWindow.textContent = coverageMs >= LIVE_WINDOW_MS - LIVE_SAMPLE_INTERVAL_MS
+                ? "Rolling buffer ready"
+                : "Filling rolling buffer";
+
+            if (live.nextWindowDueAt === null) {
+                live.nextWindowDueAt = capturedAt + Math.max(0, LIVE_WINDOW_MS - coverageMs);
+            }
+
+            if (capturedAt >= live.nextWindowDueAt) {
+                if (live.analyzing) {
+                    liveStreamState.textContent = "GPU busy; keeping only the latest five-second buffer.";
+                } else {
+                    const windowNumber = live.windowNumber + 1;
+                    const windowData = buildLatestRollingWindow(windowNumber);
+                    if (windowData) {
+                        live.windowNumber = windowNumber;
+                        live.nextWindowDueAt = capturedAt + LIVE_STRIDE_MS;
+                        setLiveBadge("streaming", "Rolling live");
+                        liveStreamState.textContent = "Sending newest rolling window #" + windowNumber + ".";
+                        void analyzeLiveWindow(windowData, revision);
+                    }
+                }
+            } else if (!live.analyzing) {
+                const untilNext = Math.max(0, live.nextWindowDueAt - capturedAt);
+                liveStreamState.textContent = coverageMs < LIVE_WINDOW_MS - LIVE_SAMPLE_INTERVAL_MS
+                    ? "Building the first five-second rolling buffer."
+                    : "GPU idle; next rolling window in " + (untilNext / 1000).toFixed(1) + "s.";
+            }
+            captureIndex += 1;
         }
     }
 
@@ -488,6 +947,7 @@
         livePlaceholder.style.display = "none";
         await liveVideo.play();
         live.active = true;
+        startPoseTracking(revision);
         liveStartBtn.disabled = true;
         liveStopBtn.disabled = false;
         setLiveBadge("warming", "Warming up");
@@ -498,7 +958,9 @@
         liveBufferCounter.textContent = "Warm-up 2.5s";
         const ready = await waitUntil(performance.now() + CAMERA_WARMUP_MS, revision);
         if (!ready) return;
-        void captureLoop(revision);
+        live.frameBuffer = [];
+        live.nextWindowDueAt = null;
+        void rollingCaptureLoop(revision);
     }
 
     async function refreshCameraDevices() {
@@ -666,6 +1128,7 @@
     }
 
     function stopMediaOnly() {
+        stopPoseTracking();
         live.active = false;
         cancelWaiters();
         if (live.stream) live.stream.getTracks().forEach((track) => track.stop());
@@ -673,7 +1136,8 @@
         liveVideo.srcObject = null;
         liveVideo.style.display = "none";
         livePlaceholder.style.display = "flex";
-        live.pendingWindow = null;
+        live.frameBuffer = [];
+        live.nextWindowDueAt = null;
         live.analyzing = false;
         progressBar.style.width = "0%";
         liveBufferCounter.textContent = "0 / 16 frames";
@@ -693,7 +1157,6 @@
         live.phoneSession = null;
         live.pendingIce = [];
         live.windowNumber = 0;
-        live.consecutiveHazards = 0;
         phoneSessionDetails.hidden = true;
         phoneSessionEmpty.hidden = false;
         phoneFallbackWrap.hidden = true;
@@ -731,8 +1194,8 @@
         phoneControls.hidden = !phone;
         liveHeading.textContent = phone ? "Phone camera" : "Computer camera";
         liveDescription.textContent = phone
-            ? "Scan the QR code to stream a phone camera. Analysis begins only after each complete five-second window."
-            : "Preview remains live while 16 frames are recorded across exactly five seconds for each analysis.";
+            ? "Scan the QR code to stream a phone camera into a five-second rolling buffer."
+            : "Preview stays live while a 360p rolling buffer sends 16 frames when the GPU is idle.";
         liveStartLabel.textContent = phone ? "Create phone connection" : "Start camera";
         livePlaceholderTitle.textContent = phone ? "No phone connected" : "Camera is currently inactive";
         livePlaceholderSub.textContent = phone

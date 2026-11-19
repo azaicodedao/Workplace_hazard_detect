@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+ultralytics>=8.4
+numpy>=1.26
+websockets>=12
+python-dotenv>=1.0
+python-multipart>=0.0.9

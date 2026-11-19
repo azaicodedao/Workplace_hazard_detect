@@ -6,14 +6,16 @@ from app.config import LIVE_FRAME_COUNT, LIVE_SAMPLE_INTERVAL_MS, LIVE_WINDOW_DU
 
 
 class LiveCameraState:
-    REQUIRED_CONSECUTIVE_HAZARDS = 2
+    WINDOW_MS = 5000
+    STRIDE_MS = 4000
 
     def __init__(self):
         self.revision = 0
         self.active = False
         self.warming_up = False
         self.frames = []
-        self.consecutive_hazards = 0
+        self.analyzing = False
+        self.next_due_ms = None
 
     def start(self):
         self.revision += 1
@@ -26,31 +28,37 @@ class LiveCameraState:
         if self.active and revision == self.revision:
             self.warming_up = False
 
-    def sample(self, revision, frame):
+    def sample(self, revision, timestamp_ms, frame):
         if not self.active or self.warming_up or revision != self.revision:
             return None
-        self.frames.append(frame)
-        if len(self.frames) != LIVE_FRAME_COUNT:
+        self.frames.append((timestamp_ms, frame))
+        self.frames = [item for item in self.frames if item[0] >= timestamp_ms - 6000]
+        if self.next_due_ms is None:
+            self.next_due_ms = timestamp_ms + self.WINDOW_MS
+        coverage = self.frames[-1][0] - self.frames[0][0]
+        if (
+            self.analyzing
+            or timestamp_ms < self.next_due_ms
+            or len(self.frames) < LIVE_FRAME_COUNT
+            or coverage < self.WINDOW_MS
+        ):
             return None
-        complete = self.frames
-        self.frames = []
-        return complete
+        self.analyzing = True
+        self.next_due_ms = timestamp_ms + self.STRIDE_MS
+        return [frame_value for _, frame_value in self.frames[-LIVE_FRAME_COUNT:]]
+
+    def finish_analysis(self):
+        self.analyzing = False
 
     def apply_prediction(self, status):
-        self.consecutive_hazards = (
-            self.consecutive_hazards + 1 if status == "Hazard" else 0
-        )
-        return (
-            "Hazard"
-            if self.consecutive_hazards >= self.REQUIRED_CONSECUTIVE_HAZARDS
-            else "Safe"
-        )
+        return status
 
     def stop(self):
         self.active = False
         self.revision += 1
         self.frames = []
-        self.consecutive_hazards = 0
+        self.analyzing = False
+        self.next_due_ms = None
 
 
 class WarmupAndSmoothingTests(unittest.TestCase):
@@ -59,38 +67,57 @@ class WarmupAndSmoothingTests(unittest.TestCase):
 
     def test_warmup_frames_are_not_collected(self):
         revision = self.camera.start()
-        self.assertIsNone(self.camera.sample(revision, "dark-frame"))
+        self.assertIsNone(self.camera.sample(revision, 0, "dark-frame"))
         self.assertEqual(self.camera.frames, [])
         self.camera.finish_warmup(revision)
-        self.camera.sample(revision, "stable-frame")
-        self.assertEqual(self.camera.frames, ["stable-frame"])
+        self.camera.sample(revision, 0, "stable-frame")
+        self.assertEqual(self.camera.frames, [(0, "stable-frame")])
 
     def test_window_contains_exactly_sixteen_frames(self):
         revision = self.camera.start()
         self.camera.finish_warmup(revision)
         complete = None
         for index in range(LIVE_FRAME_COUNT):
-            complete = self.camera.sample(revision, f"frame-{index}")
+            timestamp = index * LIVE_SAMPLE_INTERVAL_MS
+            complete = self.camera.sample(revision, timestamp, f"frame-{index}")
         self.assertEqual(len(complete), LIVE_FRAME_COUNT)
-        self.assertEqual(self.camera.frames, [])
+        self.assertEqual(len(self.camera.frames), LIVE_FRAME_COUNT)
+
+    def test_gpu_busy_does_not_create_a_pending_window(self):
+        revision = self.camera.start()
+        self.camera.finish_warmup(revision)
+        for index in range(LIVE_FRAME_COUNT):
+            self.camera.sample(
+                revision,
+                index * LIVE_SAMPLE_INTERVAL_MS,
+                f"frame-{index}",
+            )
+        self.assertTrue(self.camera.analyzing)
+        for index in range(1, 13):
+            result = self.camera.sample(
+                revision,
+                5000 + index * LIVE_SAMPLE_INTERVAL_MS,
+                f"new-{index}",
+            )
+            self.assertIsNone(result)
+        self.assertLessEqual(len(self.camera.frames), 19)
 
     def test_sampling_schedule_starts_at_zero_and_ends_at_five_seconds(self):
         timestamps = [index * LIVE_SAMPLE_INTERVAL_MS for index in range(LIVE_FRAME_COUNT)]
         self.assertEqual(timestamps[0], 0)
         self.assertAlmostEqual(timestamps[-1], LIVE_WINDOW_DURATION_MS)
 
-    def test_two_consecutive_hazards_are_required(self):
-        self.assertEqual(self.camera.apply_prediction("Hazard"), "Safe")
+    def test_each_window_uses_its_own_prediction(self):
         self.assertEqual(self.camera.apply_prediction("Hazard"), "Hazard")
         self.assertEqual(self.camera.apply_prediction("Safe"), "Safe")
-        self.assertEqual(self.camera.consecutive_hazards, 0)
+        self.assertEqual(self.camera.apply_prediction("Hazard"), "Hazard")
 
     def test_stop_invalidates_old_revision_and_clears_frames(self):
         revision = self.camera.start()
         self.camera.finish_warmup(revision)
-        self.camera.sample(revision, "frame")
+        self.camera.sample(revision, 0, "frame")
         self.camera.stop()
-        self.assertIsNone(self.camera.sample(revision, "stale-frame"))
+        self.assertIsNone(self.camera.sample(revision, 100, "stale-frame"))
         self.assertEqual(self.camera.frames, [])
 
 

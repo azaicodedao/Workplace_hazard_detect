@@ -1,6 +1,7 @@
 """FastAPI inference routes with selectable local or remote GPU execution."""
 
 import asyncio
+import json
 import shutil
 import threading
 import traceback
@@ -11,9 +12,20 @@ from typing import List
 import cv2
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.inference.remote_client import RemoteInferenceClient, RemoteInferenceError
-from app.schemas.prediction import PredictionResponse
+from app.inference.pose_client import PoseVideoClient
+from app.schemas.prediction import PredictionResponse, TimelinePredictionResponse
+from app.inference.timeline import (
+    COARSE_STRIDE_SECONDS,
+    WINDOW_SECONDS,
+    build_events,
+    build_window_starts,
+    encode_remote_frames,
+    probe_video,
+    sample_window,
+)
 from app.config import (
     INFERENCE_BACKEND,
     LIVE_DURATION_TOLERANCE_MS,
@@ -23,6 +35,9 @@ from app.config import (
     REMOTE_INFERENCE_TOKEN,
     REMOTE_INFERENCE_URL,
     REMOTE_LIVE_TIMEOUT_SECONDS,
+    POSE_SERVICE_HTTP_URL,
+    POSE_TRACKING_ENABLED,
+    POSE_VIDEO_TIMEOUT_SECONDS,
 )
 
 router = APIRouter()
@@ -44,6 +59,10 @@ remote_client = RemoteInferenceClient(
     token=REMOTE_INFERENCE_TOKEN,
     timeout_seconds=REMOTE_INFERENCE_TIMEOUT_SECONDS,
     live_timeout_seconds=REMOTE_LIVE_TIMEOUT_SECONDS,
+)
+pose_video_client = PoseVideoClient(
+    base_url=POSE_SERVICE_HTTP_URL,
+    timeout_seconds=POSE_VIDEO_TIMEOUT_SECONDS,
 )
 
 print(f"Inference backend: {INFERENCE_BACKEND}")
@@ -98,6 +117,16 @@ def _run_live_inference(frames: List[np.ndarray]) -> dict:
         return predictor.predict_from_frames(frames)
     finally:
         inference_lock.release()
+
+
+def _run_timeline_inference(frames: List[np.ndarray]) -> dict:
+    """Run an upload timeline window sequentially without competing with live inference."""
+    acquired = inference_lock.acquire(blocking=True)
+    try:
+        return predictor.predict_from_frames(frames)
+    finally:
+        if acquired:
+            inference_lock.release()
 
 
 def _ensure_backend_ready() -> None:
@@ -226,6 +255,230 @@ async def predict_video(file: UploadFile = File(...)):
             print(f"Canh bao: Chua the xoa file tam {file_path}: {remove_err}")
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# POST /predict/timeline/ -- OVERLAPPING-WINDOW UPLOAD LOCALIZATION
+# ---------------------------------------------------------------------------
+
+async def _iterate_timeline_events(file_path: Path, pose_task=None):
+    """Yield progress as NDJSON-ready dictionaries after each GPU window."""
+    video_info = await asyncio.to_thread(probe_video, str(file_path))
+    prediction_cache: dict[float, tuple[float, dict]] = {}
+
+    async def analyze_window(start_time: float, phase: str) -> dict:
+        cache_key = round(start_time, 3)
+        cached = prediction_cache.get(cache_key)
+        if cached is None:
+            frames, end_time = await asyncio.to_thread(
+                sample_window,
+                str(file_path),
+                start_time,
+                video_info.duration_seconds,
+            )
+            if INFERENCE_BACKEND == "remote":
+                remote_frames = await asyncio.to_thread(encode_remote_frames, frames)
+                prediction = await remote_client.predict_frames(
+                    remote_frames,
+                    source_type="computer_camera",
+                    captured_duration_ms=int(WINDOW_SECONDS * 1000),
+                    window_id=f"upload-{phase}-{cache_key:.3f}",
+                )
+            else:
+                prediction = await asyncio.to_thread(_run_timeline_inference, frames)
+            prediction_cache[cache_key] = (end_time, prediction)
+        else:
+            end_time, prediction = cached
+
+        return {
+            "window_id": f"{phase}-{cache_key:.3f}",
+            "phase": phase,
+            "start_time": cache_key,
+            "end_time": end_time,
+            "status": prediction["status"],
+            "hazard_confidence": prediction["hazard_confidence"],
+            "detected_actions": prediction.get("detected_actions", []),
+        }
+
+    coarse_starts = build_window_starts(
+        video_info.duration_seconds,
+        COARSE_STRIDE_SECONDS,
+    )
+    yield {
+        "type": "started",
+        "video_duration": video_info.duration_seconds,
+        "coarse_windows": len(coarse_starts),
+    }
+
+    coarse_windows = []
+    for index, start_time in enumerate(coarse_starts, start=1):
+        window = await analyze_window(start_time, "coarse")
+        coarse_windows.append(window)
+        yield {
+            "type": "window",
+            "window": window,
+            "completed": index,
+            "total": len(coarse_starts),
+            "stage": "coarse",
+        }
+
+    localization_windows = [
+        item for item in coarse_windows if item["status"].lower() == "hazard"
+    ]
+    events = build_events(localization_windows)
+    all_windows = coarse_windows
+    max_confidence = max(
+        (float(item["hazard_confidence"]) for item in all_windows),
+        default=0.0,
+    )
+    if pose_task is not None:
+        pose_analysis = await pose_task
+    else:
+        pose_analysis = {
+            "available": False,
+            "status": "Disabled",
+            "events": [],
+            "error": "Pose tracking is disabled.",
+        }
+    yield {"type": "pose_complete", "pose_analysis": pose_analysis}
+    pose_events = pose_analysis.get("events", [])
+    pose_confidence = max(
+        (float(item.get("confidence", 0.0)) for item in pose_events),
+        default=0.0,
+    )
+    result = {
+        "status": "Hazard" if events or pose_events else "Safe",
+        "hazard_confidence": round(max(max_confidence, pose_confidence), 4),
+        "video_duration": video_info.duration_seconds,
+        "events": events,
+        "windows": all_windows,
+        "scan": {
+            "window_seconds": WINDOW_SECONDS,
+            "coarse_stride_seconds": COARSE_STRIDE_SECONDS,
+            "coarse_windows": len(coarse_windows),
+            "total_inferences": len(prediction_cache),
+        },
+        "pose_analysis": pose_analysis,
+    }
+    yield {"type": "complete", "result": result}
+
+
+def _start_pose_video_task(file_path: Path):
+    if not POSE_TRACKING_ENABLED or not pose_video_client.configured:
+        return None
+    return asyncio.create_task(
+        pose_video_client.analyze_video(str(file_path), file_path.name)
+    )
+
+
+async def _cancel_task(task) -> None:
+    if task is None or task.done():
+        return
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+@router.post("/predict/timeline/", response_model=TimelinePredictionResponse)
+async def predict_video_timeline(file: UploadFile = File(...)):
+    """Locate hazardous sections using five-second windows with 1s overlap."""
+    _ensure_backend_ready()
+
+    allowed_extensions = [".mp4", ".avi", ".mov"]
+    original_filename = Path(file.filename or "video.mp4").name
+    ext = Path(original_filename).suffix.lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chi ho tro cac dinh dang video: {allowed_extensions}",
+        )
+
+    file_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{ext}"
+    try:
+        await asyncio.to_thread(_save_upload, file.file, file_path)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Khong the luu video: {error}")
+    finally:
+        await file.close()
+
+    try:
+        pose_task = _start_pose_video_task(file_path)
+        async for event in _iterate_timeline_events(file_path, pose_task):
+            if event["type"] == "complete":
+                return event["result"]
+        raise RuntimeError("Timeline analysis ended without a final result.")
+    except RemoteInferenceError as error:
+        _raise_remote_error(error)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        print("========== TIMELINE INFERENCE ERROR ==========")
+        traceback.print_exc()
+        print("==============================================")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Loi khi phan tich moc thoi gian video: {error}",
+        ) from error
+    finally:
+        await _cancel_task(locals().get("pose_task"))
+        try:
+            file_path.unlink(missing_ok=True)
+        except Exception as remove_error:
+            print(f"Canh bao: Chua the xoa file tam {file_path}: {remove_error}")
+
+
+@router.post("/predict/timeline/stream")
+async def stream_video_timeline(file: UploadFile = File(...)):
+    """Stream one NDJSON event as soon as each timeline window completes."""
+    _ensure_backend_ready()
+    allowed_extensions = [".mp4", ".avi", ".mov"]
+    original_filename = Path(file.filename or "video.mp4").name
+    ext = Path(original_filename).suffix.lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chi ho tro cac dinh dang video: {allowed_extensions}",
+        )
+
+    file_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{ext}"
+    try:
+        await asyncio.to_thread(_save_upload, file.file, file_path)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Khong the luu video: {error}")
+    finally:
+        await file.close()
+
+    async def generate():
+        pose_task = _start_pose_video_task(file_path)
+        try:
+            async for event in _iterate_timeline_events(file_path, pose_task):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except RemoteInferenceError as error:
+            yield json.dumps(
+                {"type": "error", "status_code": error.status_code, "detail": error.detail},
+                ensure_ascii=False,
+            ) + "\n"
+        except Exception as error:
+            print("========== TIMELINE STREAM ERROR ==========")
+            traceback.print_exc()
+            print("===========================================")
+            yield json.dumps(
+                {"type": "error", "status_code": 500, "detail": str(error)},
+                ensure_ascii=False,
+            ) + "\n"
+        finally:
+            await _cancel_task(pose_task)
+            try:
+                file_path.unlink(missing_ok=True)
+            except Exception as remove_error:
+                print(f"Canh bao: Chua the xoa file tam {file_path}: {remove_error}")
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

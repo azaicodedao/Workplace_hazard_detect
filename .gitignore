@@ -7,3 +7,6 @@ __pycache__/
 certs/
 frontend/certs/
 .env
+.venv-pose/
+/yolo26n-pose.pt
+/runs/

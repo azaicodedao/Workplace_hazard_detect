@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Industrial Safety System</title>
-    <link rel="stylesheet" href="css/style.css?v=20261111-2">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23121c27'/%3E%3Cpath d='M32 10 55 52H9L32 10Z' fill='%23f0b429'/%3E%3Cpath d='M32 23v15' stroke='%23121c27' stroke-width='6' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='45' r='3' fill='%23121c27'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="css/style.css?v=20261116-3">
 </head>
 <body>
     <div class="app-shell">
@@ -91,7 +92,7 @@
                 <section class="panel upload-panel" aria-labelledby="upload-heading">
                     <div class="panel-header">
                         <h2 id="upload-heading">Video input</h2>
-                        <p>Upload a workplace clip for hazard analysis. Supported formats: MP4, AVI, MOV.</p>
+                        <p>Upload a workplace clip to locate hazardous moments on its timeline. Supported formats: MP4, AVI, MOV.</p>
                     </div>
 
                     <div
@@ -146,14 +147,14 @@
                 <section class="panel result-panel" aria-labelledby="result-heading" aria-live="polite">
                     <div class="panel-header">
                         <h2 id="result-heading">Detection result</h2>
-                        <p>Results appear after analysis. Nothing is shown until a clip is processed.</p>
+                        <p>Results include detected time ranges, peak timestamps, confidence, and per-window details.</p>
                     </div>
 
                     <div id="result-body">
                         <div class="empty-state" id="empty-state">
                             <div class="empty-icon" aria-hidden="true"></div>
                             <h3>No analysis yet</h3>
-                            <p>Select a video and run analysis to see hazard status, confidence, and detected workplace actions.</p>
+                            <p>Select a video and run analysis to find when hazardous events occur.</p>
                         </div>
                     </div>
                 </section>
@@ -169,7 +170,7 @@
                             <h2 id="live-heading">Computer camera</h2>
                             <span id="live-status-badge" class="status-badge badge-idle">Camera Off</span>
                         </div>
-                        <p id="live-description">Preview remains live while the system records 16 frames across exactly 5 seconds for each analysis.</p>
+                        <p id="live-description">Preview stays live while a 360p rolling buffer sends 16 frames when the GPU is idle.</p>
                     </div>
 
                     <div id="computer-controls" class="source-controls">
@@ -209,6 +210,7 @@
 
                     <div class="live-feed-container">
                         <video id="live-video" class="live-video-element" autoplay playsinline muted></video>
+                        <canvas id="pose-overlay" class="pose-overlay" aria-hidden="true"></canvas>
                         <div id="live-placeholder" class="live-placeholder">
                             <div class="live-placeholder-icon" aria-hidden="true">
                                 <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2">
@@ -221,6 +223,7 @@
                         </div>
                         <!-- Canvas an de chup frames thanh JPEG -->
                         <canvas id="live-canvas" hidden></canvas>
+                        <canvas id="pose-capture-canvas" hidden></canvas>
                     </div>
 
                     <div class="live-stream-bar">
@@ -242,6 +245,7 @@
                         </div>
                     </div>
                     <p id="live-stream-state" class="live-pipeline-state">Idle</p>
+                    <p id="pose-tracking-state" class="pose-tracking-state">Pose tracking inactive</p>
                     <div class="capture-progress" aria-hidden="true">
                         <span id="capture-progress-bar"></span>
                     </div>
@@ -265,6 +269,8 @@
                         <p>Each result is produced only after a complete five-second recording window.</p>
                     </div>
 
+                    <div id="pose-alert" class="pose-alert" hidden></div>
+
                     <div id="live-result-body">
                         <div class="empty-state" id="live-empty-state">
                             <div class="empty-icon" aria-hidden="true"></div>
@@ -277,6 +283,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=20261111-4"></script>
+    <script src="js/app.js?v=20261119-2"></script>
 </body>
 </html>

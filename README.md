@@ -9,11 +9,48 @@ This system uses a pre-trained VideoMAE model to detect industrial hazards from 
 
 ## Video sources
 
-- **Upload file** sends the original video to `POST /predict/`. The existing full-video frame extraction and uniform sampling are unchanged.
-- **Computer camera** uses the browser camera and sends 16 JPEG frames captured from `0ms` through `5000ms` to `POST /predict/live/`. Live frames preserve up to 480p source resolution and use JPEG quality 0.92 before VideoMAE preprocessing.
-- **Phone camera** pairs through a one-time QR code and streams to the dashboard with WebRTC. The dashboard applies the same five-second live capture pipeline.
+- **Upload file** calls `POST /predict/timeline/stream` and consumes an NDJSON stream, so each 5-second VideoMAE window appears as soon as its GPU inference completes. Windows start every 4 seconds, leaving 1 second of overlap to protect chunk boundaries. Each window contains 16 uniformly sampled JPEG frames resized to at most 360p at quality 0.92. At the same time, the local YOLO Pose service tracks people across the uploaded video at 10 sampled FPS and returns timestamped fall events. There is no second detailed scan. The final result combines VideoMAE hazard ranges with YOLO Pose fall ranges. JSON endpoints `POST /predict/timeline/` and `POST /predict/` remain available for backward compatibility.
+- **Computer camera** continuously maintains a five-second rolling buffer, sampled as 16 JPEG frames at up to 360p and quality 0.92. The target stride is four seconds; a new window is sent to `POST /predict/live/` only while the GPU is idle, and stale windows are never queued.
+- **Phone camera** pairs through a one-time QR code and streams to the dashboard with WebRTC. The dashboard applies the same rolling-buffer pipeline.
 
-The camera preview remains smooth while inference runs. Only one inference request runs at a time, and an older waiting window is replaced by the newest complete window to prevent latency buildup.
+The camera preview remains smooth while inference runs. Only one VideoMAE request runs at a time; while the GPU is busy the rolling buffer keeps changing, but no stale window is queued.
+
+## Real-time YOLO Pose tracking
+
+YOLO Pose runs as an isolated Python 3.11 service on port `8001`. The main app proxies `/ws/pose` over its existing HTTP/HTTPS origin, so computer and phone modes work without mixed-content errors.
+
+Create the environment once:
+
+```powershell
+py -3.11 -m venv .venv-pose
+.\.venv-pose\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-pose\Scripts\python.exe -m pip install -r pose_service\requirements.txt
+```
+
+Normally only one command is needed; `run.py` starts and stops the pose service automatically:
+
+```powershell
+py run.py
+```
+
+For troubleshooting, disable `POSE_AUTO_START` and run the pose service manually in a separate window with `.\.venv-pose\Scripts\python.exe -m pose_service.run`.
+
+The first pose-service start downloads `yolo26n-pose.pt`. The browser sends at most one outstanding 640px JPEG at a time, targeting 10 FPS without creating a tracking backlog. Each camera stream gets fresh tracker state. The overlay shows skeletons, bounding boxes, track IDs, and the heuristic states `STANDING`, `FALLING`, or `FALLEN`.
+
+Default pose settings can be overridden in `.env`:
+
+```env
+POSE_TRACKING_ENABLED=true
+POSE_AUTO_START=true
+POSE_SERVICE_WS_URL=ws://127.0.0.1:8001/ws/pose
+POSE_MODEL=yolo26n-pose.pt
+POSE_TRACKER=bytetrack.yaml
+POSE_DEVICE=cpu
+POSE_IMAGE_SIZE=640
+POSE_CONFIDENCE=0.35
+```
+
+The fall state is temporal logic over tracked keypoints, not a separately trained fall classifier. Validate and tune its thresholds using the actual camera angles before treating it as a safety alert.
 
 ## Kaggle GPU inference
 
@@ -61,5 +98,5 @@ python run.py
 ## Tests
 
 ```powershell
-python -m unittest test_live_window.py test_camera_sessions.py test_camera_api.py test_network_address.py test_warmup_and_smoothing.py test_remote_inference.py
+python -m unittest test_live_window.py test_camera_sessions.py test_camera_api.py test_network_address.py test_warmup_and_smoothing.py test_remote_inference.py test_video_timeline.py test_timeline_api.py test_pose_fall_state.py
 ```
